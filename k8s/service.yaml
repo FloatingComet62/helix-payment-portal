@@ -1,0 +1,26 @@
+# ClusterIP Service — internal only, not exposed to the internet directly.
+# The Nginx Ingress Controller routes external traffic here,
+# which then load-balances across all healthy pods in this namespace.
+#
+# Traffic flow:
+#   Internet → DO Load Balancer (same IP as techfest)
+#   → Nginx Ingress Controller (routes by hostname: pay.helixtiet.in)
+#   → central-payment-api Service:8000
+#   → Pod-1:8000 OR Pod-2:8000 (round-robin)
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: central-payment-api
+  namespace: central-payment
+  labels:
+    app: central-payment-api
+spec:
+  type: ClusterIP
+  selector:
+    app: central-payment-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP

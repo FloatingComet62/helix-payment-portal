@@ -1,0 +1,58 @@
+# HorizontalPodAutoscaler for the Central Payment Portal.
+#
+# Payment workloads are bursty — quiet most of the day,
+# then spikes during fest registration windows.
+#
+# SCALE-UP:  immediate (stabilizationWindowSeconds: 0), +2 pods per 30s
+# SCALE-DOWN: waits 5 minutes before removing pods (avoids flapping)
+#
+# WATCH LIVE:
+#   kubectl get hpa -n central-payment -w
+#
+# PREREQUISITE: Metrics Server already running (it's installed on DOKS by default).
+#   Verify: kubectl top pods -n central-payment
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: central-payment-api
+  namespace: central-payment
+  labels:
+    app: central-payment-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: central-payment-api
+
+  minReplicas: 2
+  maxReplicas: 10   # Payment service is less CPU-intensive than techfest; 10 is ample
+
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

@@ -1,0 +1,76 @@
+# Ingress for the Central Payment Portal.
+#
+# SHARES THE SAME LOAD BALANCER as the techfest service.
+# No new LB is created — the existing Nginx Ingress Controller simply gets
+# a new routing rule: requests for api.accommodationstiet.shop → central-payment-api Service.
+#
+# BEFORE APPLYING:
+#   1. cert-manager and ClusterIssuers are already installed on this cluster (from techfest).
+#      DO NOT re-apply clusterissuer.yaml — it's cluster-scoped and already exists.
+#
+#   2. Add a DNS A record:
+#        api.accommodationstiet.shop → <same EXTERNAL-IP as api.helixtiet.in>
+#      Get the IP: kubectl get svc -n ingress-nginx
+#      It's the same IP — different domain, but same nginx controller and same LB.
+#
+#   3. Apply in order:
+#        kubectl apply -f k8s/namespace.yaml
+#        kubectl apply -f k8s/configmap.yaml
+#        kubectl apply -f k8s/secret.yaml       ← fill in real values first
+#        kubectl apply -f k8s/deployment.yaml
+#        kubectl apply -f k8s/service.yaml
+#        kubectl apply -f k8s/ingress.yaml
+#        kubectl apply -f k8s/hpa.yaml
+#
+# EaseBuzz WEBHOOK NOTE:
+#   The PORTAL_CALLBACK_URL in configmap.yaml must be:
+#     https://api.accommodationstiet.shop/webhook/easebuzz
+#   EaseBuzz will POST S2S payment results to this URL.
+#   Register this URL in your EaseBuzz merchant dashboard as the webhook endpoint.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: central-payment-api
+  namespace: central-payment
+  labels:
+    app: central-payment-api
+  annotations:
+    # Uses the SAME ClusterIssuer already installed for techfest
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+    # Nginx tuning — webhook bodies can be small; 2m is sufficient
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+
+    # Forward real client IP (important for any future rate limiting)
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+    nginx.ingress.kubernetes.io/compute-full-forwarded-for: "true"
+
+    # Force HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    nginx.ingress.kubernetes.io/enable-compression: "true"
+
+spec:
+  # Same ingressClassName = same Nginx controller = same LB IP. No extra cost.
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.accommodationstiet.shop
+      secretName: accommodationstiet-tls    # cert-manager creates this automatically
+
+  rules:
+    - host: api.accommodationstiet.shop
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: central-payment-api
+                port:
+                  number: 8000

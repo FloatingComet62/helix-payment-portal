@@ -1,0 +1,11 @@
+# Isolated namespace for the Central Payment Portal.
+# Keeps all payment resources separate from techfest and any other services
+# running on the same cluster. Use -n central-payment in all kubectl commands.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: central-payment
+  labels:
+    app: central-payment-api
+    environment: production

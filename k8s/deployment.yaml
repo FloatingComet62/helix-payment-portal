@@ -1,0 +1,128 @@
+# Deployment for the Central Payment Portal FastAPI service.
+#
+# ROLLING UPDATE STRATEGY:
+#   maxSurge: 1, maxUnavailable: 0 — zero downtime deploys.
+#   New pod comes up and passes readiness before old pod is killed.
+#
+# RESOURCES:
+#   This is a FastAPI + Motor (async MongoDB) service — light on CPU, moderate on memory.
+#   Tune requests/limits after observing real load with: kubectl top pods -n central-payment
+#
+# IMAGE:
+#   Uses the same DOCR registry as the techfest service.
+#   CI/CD should override the tag with the commit SHA on each deploy.
+#
+# PROBES:
+#   readinessProbe — pod only receives traffic once /health returns 200.
+#   livenessProbe  — pod is restarted if /health fails 3 consecutive times.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: central-payment-api
+  namespace: central-payment
+  labels:
+    app: central-payment-api
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: central-payment-api
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app: central-payment-api
+    spec:
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: central-payment-api
+          # Replace central-payment-api with your actual DOCR repo name
+          # CI/CD should override :latest with the commit SHA on each deploy
+          image: registry.digitalocean.com/techfest-api/central-payment-api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+
+          # Load all non-sensitive env vars from ConfigMap
+          envFrom:
+            - configMapRef:
+                name: central-payment-config
+
+          # Load sensitive env vars from Secret
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: central-payment-secrets
+                  key: mongodb-uri
+
+            - name: EASEBUZZ_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: central-payment-secrets
+                  key: easebuzz-key
+
+            - name: EASEBUZZ_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: central-payment-secrets
+                  key: easebuzz-salt
+
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: central-payment-secrets
+                  key: admin-api-key
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              httpHeaders:
+                - name: Host
+                  value: api.accommodationstiet.shop
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+              httpHeaders:
+                - name: Host
+                  value: api.accommodationstiet.shop
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 10
+
+      # Same DOCR pull secret as techfest — must be copied to this namespace first.
+      # See the note in secret.yaml for the copy command.
+      imagePullSecrets:
+        - name: registry-techfest-api
