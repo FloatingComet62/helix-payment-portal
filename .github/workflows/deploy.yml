@@ -1,0 +1,120 @@
+name: Build & Deploy — Central Payment API
+
+# Triggers:
+#   1. Push to main   → automatic deploy
+#   2. Manual trigger → use this after updating GitHub secrets/variables
+#      Go to: GitHub repo → Actions → "Build & Deploy" → Run workflow
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual deploy (e.g. 'updated EASEBUZZ_KEY')"
+        required: false
+        default: "manual trigger"
+
+env:
+  REGISTRY: registry.digitalocean.com/techfest-api
+  IMAGE_NAME: central-payment-api
+  K8S_NAMESPACE: central-payment
+  DEPLOYMENT_NAME: central-payment-api
+
+jobs:
+  deploy:
+    name: Build, Push, Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate with DigitalOcean ──────────────────────────────────
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_API_TOKEN }}
+
+      # ── 3. Docker login to DOCR ────────────────────────────────────────────
+      - name: Log in to DOCR
+        run: doctl registry login --expiry-seconds 600
+
+      # ── 4. Build image for amd64 (DO nodes are amd64) ─────────────────────
+      - name: Set image tag
+        id: tag
+        run: echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.sha }} \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            .
+
+      # ── 5. Push to DOCR ────────────────────────────────────────────────────
+      - name: Push image
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      # ── 6. Connect to k8s cluster ──────────────────────────────────────────
+      - name: Save kubeconfig
+        run: doctl kubernetes cluster kubeconfig save ${{ vars.DO_CLUSTER_NAME }}
+
+      # ── 7. Sync ConfigMap from GitHub Variables ────────────────────────────
+      #   To update a non-sensitive config value:
+      #   GitHub repo → Settings → Secrets and variables → Actions → Variables tab
+      #   Then trigger a manual deploy (Actions → Run workflow)
+      - name: Apply ConfigMap
+        run: |
+          kubectl create configmap central-payment-config \
+            --from-literal=HOST="0.0.0.0" \
+            --from-literal=PORT="8000" \
+            --from-literal=MONGODB_DB_NAME="${{ vars.MONGODB_DB_NAME || 'central_payment' }}" \
+            --from-literal=MONGO_MAX_POOL_SIZE="${{ vars.MONGO_MAX_POOL_SIZE || '50' }}" \
+            --from-literal=MONGO_MIN_POOL_SIZE="${{ vars.MONGO_MIN_POOL_SIZE || '10' }}" \
+            --from-literal=EASEBUZZ_ENV="${{ vars.EASEBUZZ_ENV || 'prod' }}" \
+            --from-literal=EASEBUZZ_FEE_PERCENT="${{ vars.EASEBUZZ_FEE_PERCENT || '2.00' }}" \
+            --from-literal=PORTAL_CALLBACK_URL="https://api.accommodationstiet.shop/webhook/easebuzz" \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── 8. Sync Secret from GitHub Secrets ────────────────────────────────
+      #   To update a sensitive value (e.g. rotate EASEBUZZ_KEY):
+      #   GitHub repo → Settings → Secrets and variables → Actions → Secrets tab
+      #   Then trigger a manual deploy (Actions → Run workflow)
+      - name: Apply Secret
+        run: |
+          kubectl create secret generic central-payment-secrets \
+            --from-literal=mongodb-uri="${{ secrets.MONGODB_URI }}" \
+            --from-literal=easebuzz-key="${{ secrets.EASEBUZZ_KEY }}" \
+            --from-literal=easebuzz-salt="${{ secrets.EASEBUZZ_SALT }}" \
+            --from-literal=admin-api-key="${{ secrets.ADMIN_API_KEY }}" \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── 9. Update image tag in deployment and rollout ──────────────────────
+      - name: Deploy new image
+        run: |
+          kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
+            ${{ env.IMAGE_NAME }}=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.sha }} \
+            -n ${{ env.K8S_NAMESPACE }}
+
+      # ── 10. Wait for rollout to complete ───────────────────────────────────
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=120s
+
+      # ── 11. Smoke test ─────────────────────────────────────────────────────
+      - name: Health check
+        run: |
+          sleep 5
+          curl --fail --silent \
+            https://api.accommodationstiet.shop/health \
+            | grep -q '"status":"ok"' \
+            && echo "✓ Health check passed" \
+            || (echo "✗ Health check failed" && exit 1)
