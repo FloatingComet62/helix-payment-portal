@@ -124,7 +124,7 @@ def _build_booking_with_amounts(
             food_amount=_amount_str(food_total),
         )
 
-    if pricing.mode == "fixed":
+    if pricing.mode ==   "fixed":
         total = calculate_base_amount(pricing, booking)
         if booking.food_days > 0 and booking.accommodation_days == 0:
             return BookingDetail(
@@ -264,7 +264,7 @@ async def initiate_payment(
         "hash_input": (
             f"{settings.EASEBUZZ_KEY}|{internal_tx_id}|{amount_str}|{productinfo}"
             f"|{request.user_name}|noreply@portal.local"
-            f"|{request.origin_user_id}|{request.fest_id}||||||||{settings.EASEBUZZ_SALT}"
+            f"|{request.origin_user_id}|{request.fest_id}|||||||||{settings.EASEBUZZ_SALT}"
         ),
         "hash": eb_hash,
         "amount": amount_str,
