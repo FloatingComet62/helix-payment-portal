@@ -10,7 +10,7 @@ import httpx
 from app.core import security
 from app.core.database import get_transactions_col
 from app.models.fest import FestDB
-from app.models.transaction import NotificationLog, TransactionDB, TxSource, TxStatus
+from app.models.transaction import NotificationLog, TransactionDB, TxStatus
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,6 @@ def build_callback_payload(transaction: TransactionDB) -> dict:
         if transaction.completed_at
         else None,
         "status": transaction.status.value,
-        "source": transaction.source.value,
-        "miscellaneous": transaction.source == TxSource.DIRECT_PORTAL,
     }
 
 

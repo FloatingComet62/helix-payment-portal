@@ -48,9 +48,10 @@ class FestCreate(BaseModel):
     short_description: Optional[str] = None
     long_description: Optional[str] = None
     authorized_url: str   # Origin URL of the fest frontend (for future CORS/validation)
-    callback_url: HttpUrl # Where we POST after successful payment
+    callback_url: HttpUrl # Where we POST after successful/failed payment
     pricing: PricingConfig
-    available_options: list[str] = ["accommodation", "food", "bundled"]  # Which accommodation options are available
+    available_options: list[str] = ["accommodation", "food", "bundled"]
+    total_accommodation_seats: Optional[int] = None  # None = unlimited; set to enforce seat cap
 
 
 class FestDB(FestCreate):
@@ -70,6 +71,7 @@ class FestPublic(BaseModel):
     callback_url: HttpUrl
     pricing: PricingConfig
     available_options: list[str] = ["accommodation", "food", "bundled"]
+    total_accommodation_seats: Optional[int] = None
     created_at: datetime
 
 
@@ -83,6 +85,7 @@ class FestUpdate(BaseModel):
     callback_url: Optional[HttpUrl] = None
     pricing: Optional[PricingConfig] = None
     available_options: Optional[list[str]] = None
+    total_accommodation_seats: Optional[int] = None
 
 
 class FestListing(BaseModel):

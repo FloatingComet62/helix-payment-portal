@@ -3,20 +3,20 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorCollection
+from redis.asyncio import Redis
 
 from app.core.config import get_settings
+from app.core.redis_client import acquire_seat
 from app.core.security import generate_easebuzz_hash
 from app.models.fest import FestDB, PricingConfig
 from app.models.transaction import (
     BookingDetail,
+    PaymentInitiateResponse,
     TransactionCreate,
     TransactionDB,
-    TxSource,
     TxStatus,
-    PaymentInitiateResponse,
 )
 from app.services.coupon_service import validate_coupon
 
@@ -33,7 +33,6 @@ def calculate_base_amount(pricing: PricingConfig, booking: BookingDetail) -> Dec
     Returns a Decimal quantized to 2 decimal places.
     """
     if pricing.mode == "fixed":
-        # New fixed behavior: option-specific prices.
         if booking.accommodation_days > 0 and booking.food_days > 0:
             if pricing.bundled_price is not None:
                 return Decimal(str(pricing.bundled_price)).quantize(TWOPLACES, ROUND_HALF_UP)
@@ -43,12 +42,10 @@ def calculate_base_amount(pricing: PricingConfig, booking: BookingDetail) -> Dec
         elif booking.food_days > 0:
             if pricing.food_price is not None:
                 return Decimal(str(pricing.food_price)).quantize(TWOPLACES, ROUND_HALF_UP)
-
         # Backward compatibility for older fests configured with a single fixed_rate.
         return Decimal(str(pricing.fixed_rate or "0.00")).quantize(TWOPLACES, ROUND_HALF_UP)
 
     if pricing.mode == "per_day":
-        # New per-day behavior: separate accommodation and food/day rates.
         if pricing.addon:
             accommodation = (
                 Decimal(str(pricing.addon.accommodation_per_day)) * Decimal(str(booking.accommodation_days))
@@ -57,7 +54,6 @@ def calculate_base_amount(pricing: PricingConfig, booking: BookingDetail) -> Dec
                 Decimal(str(pricing.addon.food_per_day)) * Decimal(str(booking.food_days))
             )
             return (accommodation + food).quantize(TWOPLACES, ROUND_HALF_UP)
-
         # Backward compatibility for older fests configured with a single per_day_rate.
         per_day = Decimal(str(pricing.per_day_rate or "0.00"))
         days = Decimal(str(pricing.num_days or 1))
@@ -72,14 +68,11 @@ def calculate_base_amount(pricing: PricingConfig, booking: BookingDetail) -> Dec
             Decimal(str(addon.food_per_day)) * Decimal(str(booking.food_days))
         )
         subtotal = accommodation + food
-
-        # Apply bundle discount only when both accommodation and food are booked
         if booking.accommodation_days > 0 and booking.food_days > 0:
             discount_factor = (
                 Decimal("100") - Decimal(str(addon.bundled_discount_percent))
             ) / Decimal("100")
             subtotal = subtotal * discount_factor
-
         return subtotal.quantize(TWOPLACES, ROUND_HALF_UP)
 
     raise ValueError(f"Unknown pricing mode: {pricing.mode!r}")
@@ -98,7 +91,6 @@ def calculate_easebuzz_fee(amount: Decimal, fee_percent: Decimal) -> Decimal:
 
 
 def _amount_str(d: Decimal) -> str:
-    """Format Decimal as a 2-decimal-place string for storage and EaseBuzz."""
     return f"{d:.2f}"
 
 
@@ -110,9 +102,6 @@ def _build_booking_with_amounts(
     pricing: PricingConfig,
     booking: BookingDetail,
 ) -> BookingDetail:
-    """
-    Attach computed accommodation_amount and food_amount strings to BookingDetail.
-    """
     if pricing.mode == "per_day" and pricing.addon:
         addon = pricing.addon
         acc_total = (
@@ -130,25 +119,18 @@ def _build_booking_with_amounts(
 
     if pricing.mode == "fixed":
         total = calculate_base_amount(pricing, booking)
-        if booking.accommodation_days > 0 and booking.food_days > 0:
+        if booking.food_days > 0 and booking.accommodation_days == 0:
             return BookingDetail(
                 accommodation_days=booking.accommodation_days,
                 food_days=booking.food_days,
-                accommodation_amount=_amount_str(total),
-                food_amount="0.00",
-            )
-        if booking.accommodation_days > 0:
-            return BookingDetail(
-                accommodation_days=booking.accommodation_days,
-                food_days=booking.food_days,
-                accommodation_amount=_amount_str(total),
-                food_amount="0.00",
+                accommodation_amount="0.00",
+                food_amount=_amount_str(total),
             )
         return BookingDetail(
             accommodation_days=booking.accommodation_days,
             food_days=booking.food_days,
-            accommodation_amount="0.00",
-            food_amount=_amount_str(total),
+            accommodation_amount=_amount_str(total),
+            food_amount="0.00",
         )
 
     if pricing.mode == "bundled" and pricing.addon:
@@ -183,14 +165,19 @@ async def initiate_payment(
     tx_col: AsyncIOMotorCollection,
     fest: FestDB,
     request: TransactionCreate,
+    redis: Redis,
     user_email: str = "noreply@portal.local",
     user_phone: str = "9999999999",
 ) -> PaymentInitiateResponse:
     """
-    1. Calculate all financial figures using Decimal arithmetic.
-    2. Create a PENDING transaction in MongoDB.
-    3. Generate the EaseBuzz hash.
-    4. Return the payload the frontend needs to redirect to EaseBuzz.
+    1. Check seat availability atomically in Redis (if fest has a seat cap).
+    2. Calculate all financial figures using Decimal arithmetic.
+    3. Create a PENDING transaction in MongoDB.
+    4. Generate the EaseBuzz hash.
+    5. Return the payload the frontend needs to redirect to EaseBuzz.
+
+    Seat reservation is created BEFORE the MongoDB insert so that if the
+    insert fails, the reservation TTL will auto-expire and release the seat.
     """
     settings = get_settings()
     pricing = fest.pricing
@@ -198,7 +185,7 @@ async def initiate_payment(
     booking_with_amounts = _build_booking_with_amounts(pricing, request.booking)
     base_amount = calculate_base_amount(pricing, request.booking)
 
-    # Coupon discount (validated against EaseBuzz API)
+    # ── Financial calculations ──────────────────────────────────────────────
     coupon_discount = Decimal("0.00")
     if request.coupon_code:
         coupon_discount = await validate_coupon(
@@ -206,38 +193,29 @@ async def initiate_payment(
             base_amount,
             settings.EASEBUZZ_KEY,
         )
-        # Discount must not exceed base amount
-        coupon_discount = min(coupon_discount, base_amount).quantize(
-            TWOPLACES, ROUND_HALF_UP
-        )
+        coupon_discount = min(coupon_discount, base_amount).quantize(TWOPLACES, ROUND_HALF_UP)
 
     taxable_amount = (base_amount - coupon_discount).quantize(TWOPLACES, ROUND_HALF_UP)
-
-    # GST computed strictly BEFORE handing off to gateway
     gst_percent = Decimal(str(pricing.gst_percent))
     gst_amount = calculate_gst(taxable_amount, gst_percent)
-
-    # Amount EaseBuzz will charge the user
     charge_amount = (taxable_amount + gst_amount).quantize(TWOPLACES, ROUND_HALF_UP)
-
-    # EaseBuzz platform fee (taken from the charged amount)
-    fee_percent = settings.EASEBUZZ_FEE_PERCENT
-    easebuzz_fee = calculate_easebuzz_fee(charge_amount, fee_percent)
-
-    # Net amount the fest receives after all deductions
+    easebuzz_fee = calculate_easebuzz_fee(charge_amount, settings.EASEBUZZ_FEE_PERCENT)
     final_net_credited = (charge_amount - easebuzz_fee).quantize(TWOPLACES, ROUND_HALF_UP)
-
-    # Resolve origin_user_id: use provided value for fest-redirect, generate for direct visits
-    resolved_origin_user_id = request.origin_user_id or f"portal_{uuid.uuid4()}"
 
     internal_tx_id = str(uuid.uuid4())
     now = datetime.now(tz=timezone.utc)
 
+    # ── Seat check (atomic Redis DECR) ─────────────────────────────────────
+    # Must happen BEFORE MongoDB insert. Raises SeatUnavailableError (409) if full.
+    # Reservation has a 15-min TTL — auto-released if user never completes payment.
+    if fest.total_accommodation_seats is not None and request.booking.accommodation_days > 0:
+        await acquire_seat(redis, fest.fest_id, internal_tx_id)
+
+    # ── Persist PENDING transaction ────────────────────────────────────────
     transaction = TransactionDB(
         internal_tx_id=internal_tx_id,
         fest_id=request.fest_id,
-        origin_user_id=resolved_origin_user_id,
-        source=request.source,
+        origin_user_id=request.origin_user_id,
         user_name=request.user_name,
         user_state=request.user_state,
         user_district=request.user_district,
@@ -253,7 +231,7 @@ async def initiate_payment(
     )
     await tx_col.insert_one(transaction.model_dump(mode="json"))
 
-    # EaseBuzz requires amount as a 2-dp string
+    # ── Build EaseBuzz payload ─────────────────────────────────────────────
     amount_str = _amount_str(charge_amount)
     productinfo = f"{fest.fest_id}_booking"
 
@@ -265,7 +243,7 @@ async def initiate_payment(
         firstname=request.user_name,
         email=user_email,
         salt=settings.EASEBUZZ_SALT,
-        udf1=resolved_origin_user_id,
+        udf1=request.origin_user_id,
         udf2=request.fest_id,
     )
 
@@ -280,7 +258,7 @@ async def initiate_payment(
         firstname=request.user_name,
         email=user_email,
         phone=user_phone,
-        udf1=resolved_origin_user_id,
+        udf1=request.origin_user_id,
         udf2=request.fest_id,
         udf3="",
         udf4="",

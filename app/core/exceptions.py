@@ -56,3 +56,27 @@ class CouponValidationError(HTTPException):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Coupon validation failed: {detail}",
         )
+
+
+class SeatUnavailableError(HTTPException):
+    def __init__(self, fest_id: str):
+        super().__init__(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"No accommodation seats available for fest '{fest_id}'.",
+        )
+
+
+class RefundNotAllowedError(HTTPException):
+    def __init__(self, internal_tx_id: str, current_status: str):
+        super().__init__(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Transaction '{internal_tx_id}' cannot be refunded (status: {current_status}).",
+        )
+
+
+class EaseBuzzRefundError(HTTPException):
+    def __init__(self, detail: str):
+        super().__init__(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"EaseBuzz refund API failed: {detail}",
+        )

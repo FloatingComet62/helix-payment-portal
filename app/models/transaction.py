@@ -8,16 +8,12 @@ from pydantic import BaseModel
 
 
 class TxStatus(str, Enum):
-    PENDING = "PENDING"
-    SUCCESS = "SUCCESS"
-    FAILED = "FAILED"
+    PENDING          = "PENDING"
+    SUCCESS          = "SUCCESS"
+    FAILED           = "FAILED"
     NOTIFIED_SUCCESS = "NOTIFIED_SUCCESS"
     NOTIFIED_FAILURE = "NOTIFIED_FAILURE"
-
-
-class TxSource(str, Enum):
-    FEST_REDIRECT = "fest_redirect"   # User redirected from an external fest frontend
-    DIRECT_PORTAL = "direct_portal"   # User visited the portal independently
+    REFUNDED         = "REFUNDED"
 
 
 class BookingDetail(BaseModel):
@@ -47,13 +43,11 @@ class TransactionCreate(BaseModel):
     """
     Request body for POST /payment/initiate.
 
-    For fest-redirect flow: provide origin_user_id + source="fest_redirect".
-    For direct portal flow: omit origin_user_id (backend generates "portal_<uuid>")
-                            and omit source (defaults to "direct_portal").
+    All users arrive via fest redirect — origin_user_id is always
+    provided by the fest frontend as part of the redirect parameters.
     """
     fest_id: str
-    origin_user_id: Optional[str] = None   # Fest's own user ID; auto-generated if absent
-    source: TxSource = TxSource.DIRECT_PORTAL
+    origin_user_id: str   # Always required — provided by fest frontend in redirect
     user_name: str
     user_state: str
     user_district: str
@@ -73,14 +67,12 @@ class TransactionDB(BaseModel):
         coupon_discount_applied  = discount from coupon (0.00 if no coupon)
         gst_amount               = GST on (base_amount - coupon_discount) — computed BEFORE gateway
         easebuzz_transaction_fee = platform fee on the taxable amount
-        final_net_credited       = base_amount - coupon_discount - gst_amount - easebuzz_fee
-                                   (what the fest actually receives)
+        final_net_credited       = charge_amount - easebuzz_fee (what the fest actually receives)
     """
     internal_tx_id: str
     easebuzz_txid: Optional[str] = None
     fest_id: str
-    origin_user_id: str        # resolved value (never None in DB)
-    source: TxSource           # fest_redirect | direct_portal
+    origin_user_id: str
     user_name: str
     user_state: str
     user_district: str

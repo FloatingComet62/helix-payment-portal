@@ -1,0 +1,89 @@
+# Redis StatefulSet for seat management.
+#
+# WHY STATEFULSET: Stable pod name (redis-0) + stable PVC binding.
+# Data is re-initialized from MongoDB on each pod start so Redis persistence
+# is a nice-to-have (not required), but AOF is enabled for durability.
+#
+# INTERNAL DNS:
+#   redis.central-payment.svc.cluster.local:6379
+#
+# NOTE: Seat counts are re-computed from MongoDB on every app pod startup
+# (init_all_seats in redis_client.py), so losing the Redis volume is safe —
+# the app will simply re-seed the counts on next boot.
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: central-payment
+  labels:
+    app: redis
+spec:
+  serviceName: redis
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: redis
+
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6379
+              name: redis
+
+          # Enable AOF persistence so seat reservations survive pod restarts
+          command:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --appendfsync
+            - everysec
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app: redis
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: do-block-storage
+        resources:
+          requests:
+            storage: 1Gi

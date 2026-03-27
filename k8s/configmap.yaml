@@ -18,6 +18,9 @@ data:
 
   # MongoDB
   MONGODB_DB_NAME: "central_payment"
+
+  # Redis (in-cluster StatefulSet)
+  REDIS_URL: "redis://redis.central-payment.svc.cluster.local:6379"
   MONGO_MAX_POOL_SIZE: "50"   # per pod — tune up if Atlas tier allows more connections
   MONGO_MIN_POOL_SIZE: "10"   # warm connections kept alive per pod
 
@@ -29,3 +32,9 @@ data:
   # This must match the ingress host below + the webhook route
   # EaseBuzz will POST payment results to this URL
   PORTAL_CALLBACK_URL: "https://api.accommodationstiet.shop/webhook/easebuzz"
+
+  # CORS
+  # Include production frontend domains plus local dev.
+  CORS_ALLOW_ORIGINS: "https://accommodationstiet.shop,https://www.accommodationstiet.shop"
+  # # Allow Vercel preview deployments.
+  # CORS_ALLOW_ORIGIN_REGEX: "https://.*\\.vercel\\.app"

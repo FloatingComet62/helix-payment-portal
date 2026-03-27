@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     MONGO_MAX_POOL_SIZE: int = 50   # per pod; 2 pods = 100 total Atlas connections
     MONGO_MIN_POOL_SIZE: int = 10   # warm connections kept alive to avoid TLS cold-start
 
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379"
+
     # EaseBuzz
     EASEBUZZ_KEY: str
     EASEBUZZ_SALT: str
@@ -22,11 +25,13 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ALLOW_ORIGINS: str = (
-        "http://localhost:3000,"
-        "http://127.0.0.1:3000,"
-        "https://thapar-outreach-payment-ui.vercel.app"
+        # "http://localhost:3000,"
+        # "http://127.0.0.1:3000,"
+        "https://accommodationstiet.shop,"
+        "https://www.accommodationstiet.shop,"
+        # "https://thapar-outreach-payment-ui.vercel.app"
     )
-    CORS_ALLOW_ORIGIN_REGEX: str = r"https://.*\.vercel\.app"
+    # CORS_ALLOW_ORIGIN_REGEX: str = r"https://.*\.vercel\.app"
 
     # Admin
     ADMIN_API_KEY: str
@@ -41,8 +46,19 @@ class Settings(BaseSettings):
         return "https://testpay.easebuzz.in/payment/initiateLink"
 
     @property
+    def easebuzz_refund_url(self) -> str:
+        if self.EASEBUZZ_ENV == "prod":
+            return "https://pay.easebuzz.in/transaction/refund/v2"
+        return "https://testpay.easebuzz.in/transaction/refund/v2"
+
+    @property
     def cors_allow_origins(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ALLOW_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def cors_allow_origin_regex(self) -> str | None:
+        regex = self.CORS_ALLOW_ORIGIN_REGEX.strip()
+        return regex or None
 
 
 @lru_cache
