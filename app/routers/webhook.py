@@ -54,6 +54,21 @@ async def easebuzz_s2s_webhook(
     logger.info("Received EaseBuzz S2S webhook", extra={"txnid": data.get("txnid")})
 
     # ----- Hash verification (tamper protection) -----
+    import hashlib as _hl
+    _hash_str = (
+        f"{settings.EASEBUZZ_SALT}|{data.get('status', '')}||"
+        f"{data.get('udf5', '')}|{data.get('udf4', '')}|"
+        f"{data.get('udf3', '')}|{data.get('udf2', '')}|"
+        f"{data.get('udf1', '')}|{data.get('email', '')}|"
+        f"{data.get('firstname', '')}|{data.get('productinfo', '')}|"
+        f"{data.get('amount', '')}|{data.get('txnid', '')}|"
+        f"{data.get('key', '')}"
+    )
+    logger.warning("WEBHOOK_DEBUG received=%s", data)
+    logger.warning("WEBHOOK_DEBUG hash_input=%s", repr(_hash_str))
+    logger.warning("WEBHOOK_DEBUG computed=%s", _hl.sha512(_hash_str.encode()).hexdigest())
+    logger.warning("WEBHOOK_DEBUG received_hash=%s", data.get("hash", ""))
+
     if not verify_easebuzz_response_hash(data, settings.EASEBUZZ_SALT):
         logger.warning("EaseBuzz webhook hash mismatch", extra={"txnid": data.get("txnid")})
         raise InvalidHashError()

@@ -59,7 +59,7 @@ def verify_easebuzz_response_hash(data: dict, salt: str) -> bool:
     """
     received_hash = data.get("hash", "")
     hash_str = (
-        f"{salt}|{data.get('status', '')}||"
+        f"{salt}|{data.get('status', '')}||||||"
         f"{data.get('udf5', '')}|{data.get('udf4', '')}|"
         f"{data.get('udf3', '')}|{data.get('udf2', '')}|"
         f"{data.get('udf1', '')}|{data.get('email', '')}|"
