@@ -33,10 +33,33 @@ def calculate_base_amount(pricing: PricingConfig, booking: BookingDetail) -> Dec
     Returns a Decimal quantized to 2 decimal places.
     """
     if pricing.mode == "fixed":
-        return Decimal(str(pricing.fixed_rate)).quantize(TWOPLACES, ROUND_HALF_UP)
+        # New fixed behavior: option-specific prices.
+        if booking.accommodation_days > 0 and booking.food_days > 0:
+            if pricing.bundled_price is not None:
+                return Decimal(str(pricing.bundled_price)).quantize(TWOPLACES, ROUND_HALF_UP)
+        elif booking.accommodation_days > 0:
+            if pricing.accommodation_price is not None:
+                return Decimal(str(pricing.accommodation_price)).quantize(TWOPLACES, ROUND_HALF_UP)
+        elif booking.food_days > 0:
+            if pricing.food_price is not None:
+                return Decimal(str(pricing.food_price)).quantize(TWOPLACES, ROUND_HALF_UP)
+
+        # Backward compatibility for older fests configured with a single fixed_rate.
+        return Decimal(str(pricing.fixed_rate or "0.00")).quantize(TWOPLACES, ROUND_HALF_UP)
 
     if pricing.mode == "per_day":
-        per_day = Decimal(str(pricing.per_day_rate))
+        # New per-day behavior: separate accommodation and food/day rates.
+        if pricing.addon:
+            accommodation = (
+                Decimal(str(pricing.addon.accommodation_per_day)) * Decimal(str(booking.accommodation_days))
+            )
+            food = (
+                Decimal(str(pricing.addon.food_per_day)) * Decimal(str(booking.food_days))
+            )
+            return (accommodation + food).quantize(TWOPLACES, ROUND_HALF_UP)
+
+        # Backward compatibility for older fests configured with a single per_day_rate.
+        per_day = Decimal(str(pricing.per_day_rate or "0.00"))
         days = Decimal(str(pricing.num_days or 1))
         return (per_day * days).quantize(TWOPLACES, ROUND_HALF_UP)
 
@@ -89,8 +112,45 @@ def _build_booking_with_amounts(
 ) -> BookingDetail:
     """
     Attach computed accommodation_amount and food_amount strings to BookingDetail.
-    For fixed/per_day modes the entire base goes to accommodation_amount; food is 0.
     """
+    if pricing.mode == "per_day" and pricing.addon:
+        addon = pricing.addon
+        acc_total = (
+            Decimal(str(addon.accommodation_per_day)) * Decimal(str(booking.accommodation_days))
+        ).quantize(TWOPLACES, ROUND_HALF_UP)
+        food_total = (
+            Decimal(str(addon.food_per_day)) * Decimal(str(booking.food_days))
+        ).quantize(TWOPLACES, ROUND_HALF_UP)
+        return BookingDetail(
+            accommodation_days=booking.accommodation_days,
+            food_days=booking.food_days,
+            accommodation_amount=_amount_str(acc_total),
+            food_amount=_amount_str(food_total),
+        )
+
+    if pricing.mode == "fixed":
+        total = calculate_base_amount(pricing, booking)
+        if booking.accommodation_days > 0 and booking.food_days > 0:
+            return BookingDetail(
+                accommodation_days=booking.accommodation_days,
+                food_days=booking.food_days,
+                accommodation_amount=_amount_str(total),
+                food_amount="0.00",
+            )
+        if booking.accommodation_days > 0:
+            return BookingDetail(
+                accommodation_days=booking.accommodation_days,
+                food_days=booking.food_days,
+                accommodation_amount=_amount_str(total),
+                food_amount="0.00",
+            )
+        return BookingDetail(
+            accommodation_days=booking.accommodation_days,
+            food_days=booking.food_days,
+            accommodation_amount="0.00",
+            food_amount=_amount_str(total),
+        )
+
     if pricing.mode == "bundled" and pricing.addon:
         addon = pricing.addon
         acc_total = (

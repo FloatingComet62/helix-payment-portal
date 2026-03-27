@@ -5,9 +5,9 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.aggregations.balance_sheet import run_balance_sheet
 from app.core.config import get_settings
-from app.core.database import get_db, get_fests_col
-from app.core.exceptions import AdminAuthError
-from app.models.fest import FestCreate, FestPublic, FestPricingUpdate
+from app.core.database import get_db, get_fests_col, get_transactions_col
+from app.core.exceptions import AdminAuthError, FestHasTransactionsError
+from app.models.fest import FestCreate, FestPublic, FestUpdate
 from app.services import fest_service
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -55,14 +55,58 @@ async def get_fest(
 
 
 @router.patch("/fests/{fest_id}", response_model=FestPublic)
-async def update_pricing(
+async def update_fest(
     fest_id: str,
-    payload: FestPricingUpdate,
+    payload: FestUpdate,
     _: None = AdminAuth,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     col = get_fests_col(db)
-    return await fest_service.update_fest_pricing(col, fest_id, payload)
+    return await fest_service.update_fest(col, fest_id, payload)
+
+
+@router.delete("/fests/{fest_id}", status_code=204)
+async def delete_fest(
+    fest_id: str,
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Delete a fest by ID. Removes the fest document from MongoDB.
+    Cannot delete if the fest has associated transactions.
+    """
+    transactions_col = get_transactions_col(db)
+    has_txns = await fest_service.has_transactions(transactions_col, fest_id)
+    if has_txns:
+        raise FestHasTransactionsError(fest_id)
+    
+    col = get_fests_col(db)
+    await fest_service.delete_fest(col, fest_id)
+    return None
+
+
+@router.post("/fests/check-transactions")
+async def check_fest_transactions(
+    payload: dict,
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Check which fests have transactions. Returns a list of fest IDs that have at least one transaction.
+    """
+    fest_ids = payload.get("fest_ids", [])
+    if not fest_ids:
+        return {"fests_with_transactions": []}
+    
+    transactions_col = db["transactions"]
+    fests_with_txns = []
+    
+    for fest_id in fest_ids:
+        has_txns = await fest_service.has_transactions(transactions_col, fest_id)
+        if has_txns:
+            fests_with_txns.append(fest_id)
+    
+    return {"fests_with_transactions": fests_with_txns}
 
 
 @router.get("/fests/{fest_id}/secret")

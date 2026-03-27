@@ -18,11 +18,22 @@ async def list_fests_public(
     Public endpoint — no authentication required.
 
     Returns a minimal listing of all registered fests for the portal's
-    fest-selection UI. Only exposes fest_id, legal_name, and pricing config.
+    fest-selection UI. Only exposes public fest metadata and pricing config.
     callback_url, authorized_url, and secret_key are never included.
     """
     col = get_fests_col(db)
-    cursor = col.find({}, {"_id": 0, "fest_id": 1, "legal_name": 1, "pricing": 1})
+    cursor = col.find(
+        {},
+        {
+            "_id": 0,
+            "fest_id": 1,
+            "legal_name": 1,
+            "event_dates": 1,
+            "short_description": 1,
+            "long_description": 1,
+            "pricing": 1,
+        },
+    )
     return [FestListing(**doc) async for doc in cursor]
 
 
@@ -40,7 +51,15 @@ async def get_fest_public(
     col = get_fests_col(db)
     doc = await col.find_one(
         {"fest_id": fest_id},
-        {"_id": 0, "fest_id": 1, "legal_name": 1, "pricing": 1},
+        {
+            "_id": 0,
+            "fest_id": 1,
+            "legal_name": 1,
+            "event_dates": 1,
+            "short_description": 1,
+            "long_description": 1,
+            "pricing": 1,
+        },
     )
     if not doc:
         raise FestNotFoundError(fest_id)

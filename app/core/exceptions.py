@@ -17,6 +17,14 @@ class FestAlreadyExistsError(HTTPException):
         )
 
 
+class FestHasTransactionsError(HTTPException):
+    def __init__(self, fest_id: str):
+        super().__init__(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot delete fest '{fest_id}' because it has associated transactions.",
+        )
+
+
 class TransactionNotFoundError(HTTPException):
     def __init__(self, tx_id: str):
         super().__init__(

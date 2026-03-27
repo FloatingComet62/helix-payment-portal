@@ -7,7 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorCollection
 from pymongo.errors import DuplicateKeyError
 
 from app.core.exceptions import FestAlreadyExistsError, FestNotFoundError
-from app.models.fest import FestCreate, FestDB, FestPublic, FestPricingUpdate
+from app.models.fest import FestCreate, FestDB, FestPublic, FestUpdate
 
 
 def _doc_to_fest_db(doc: dict) -> FestDB:
@@ -56,19 +56,44 @@ async def list_fests(col: AsyncIOMotorCollection) -> list[FestPublic]:
     return [_doc_to_fest_public(doc) async for doc in cursor]
 
 
-async def update_fest_pricing(
+async def update_fest(
     col: AsyncIOMotorCollection,
     fest_id: str,
-    update: FestPricingUpdate,
+    update: FestUpdate,
 ) -> FestPublic:
+    update_data = update.model_dump(mode="json", exclude_none=True)
+    if not update_data:
+        doc = await col.find_one({"fest_id": fest_id})
+        if not doc:
+            raise FestNotFoundError(fest_id)
+        return _doc_to_fest_public(doc)
+
     result = await col.find_one_and_update(
         {"fest_id": fest_id},
-        {"$set": {"pricing": update.pricing.model_dump(mode="json")}},
+        {"$set": update_data},
         return_document=True,
     )
     if not result:
         raise FestNotFoundError(fest_id)
     return _doc_to_fest_public(result)
+
+
+async def delete_fest(col: AsyncIOMotorCollection, fest_id: str) -> None:
+    """Delete a fest by ID. Raises FestNotFoundError if fest doesn't exist."""
+    result = await col.delete_one({"fest_id": fest_id})
+    if result.deleted_count == 0:
+        raise FestNotFoundError(fest_id)
+
+
+async def has_transactions(transactions_col: AsyncIOMotorCollection, fest_id: str) -> bool:
+    """Check if a fest has completed transactions (successful payments)."""
+    count = await transactions_col.count_documents(
+        {
+            "fest_id": fest_id,
+            "status": {"$in": ["SUCCESS", "NOTIFIED_SUCCESS"]},
+        }
+    )
+    return count > 0
 
 
 async def get_fest_secret(col: AsyncIOMotorCollection, fest_id: str) -> str:

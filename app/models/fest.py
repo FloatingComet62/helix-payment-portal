@@ -20,20 +20,23 @@ class AddonPricing(BaseModel):
 class PricingConfig(BaseModel):
     """
     mode:
-      - "fixed"   : single flat fee for the entire booking (fixed_rate required)
-      - "per_day" : per_day_rate * num_days (per_day_rate + num_days required)
+      - "fixed"   : separate fixed prices for food, accommodation, and bundle (food_price, accommodation_price, bundled_price)
+    - "per_day" : accommodation_per_day and food_per_day rates (addon required)
       - "bundled" : accommodation + food add-ons with optional bundle discount (addon required)
     gst_percent is always required (e.g. Decimal("18.00") for 18% GST).
     """
 
     mode: Literal["fixed", "per_day", "bundled"]
     fixed_rate: Optional[Decimal] = None
+    food_price: Optional[Decimal] = None
+    accommodation_price: Optional[Decimal] = None
+    bundled_price: Optional[Decimal] = None
     per_day_rate: Optional[Decimal] = None
     num_days: Optional[int] = None
     addon: Optional[AddonPricing] = None
     gst_percent: Decimal
 
-    @field_serializer("fixed_rate", "per_day_rate", "gst_percent")
+    @field_serializer("fixed_rate", "food_price", "accommodation_price", "bundled_price", "per_day_rate", "gst_percent")
     def serialize_decimal(self, v: Optional[Decimal]) -> Optional[str]:
         return str(v) if v is not None else None
 
@@ -41,9 +44,13 @@ class PricingConfig(BaseModel):
 class FestCreate(BaseModel):
     fest_id: str          # Unique slug, e.g. "HackTU_2026"
     legal_name: str       # Full legal name of the fest organizer
+    event_dates: Optional[str] = None
+    short_description: Optional[str] = None
+    long_description: Optional[str] = None
     authorized_url: str   # Origin URL of the fest frontend (for future CORS/validation)
     callback_url: HttpUrl # Where we POST after successful payment
     pricing: PricingConfig
+    available_options: list[str] = ["accommodation", "food", "bundled"]  # Which accommodation options are available
 
 
 class FestDB(FestCreate):
@@ -56,15 +63,26 @@ class FestPublic(BaseModel):
     """Returned to admin API consumers — secret_key is intentionally excluded."""
     fest_id: str
     legal_name: str
+    event_dates: Optional[str] = None
+    short_description: Optional[str] = None
+    long_description: Optional[str] = None
     authorized_url: str
     callback_url: HttpUrl
     pricing: PricingConfig
+    available_options: list[str] = ["accommodation", "food", "bundled"]
     created_at: datetime
 
 
-class FestPricingUpdate(BaseModel):
-    """PATCH body for updating only the pricing config of an existing fest."""
-    pricing: PricingConfig
+class FestUpdate(BaseModel):
+    """PATCH body for updating editable fest fields."""
+    legal_name: Optional[str] = None
+    event_dates: Optional[str] = None
+    short_description: Optional[str] = None
+    long_description: Optional[str] = None
+    authorized_url: Optional[str] = None
+    callback_url: Optional[HttpUrl] = None
+    pricing: Optional[PricingConfig] = None
+    available_options: Optional[list[str]] = None
 
 
 class FestListing(BaseModel):
@@ -75,4 +93,8 @@ class FestListing(BaseModel):
     """
     fest_id: str
     legal_name: str
+    event_dates: Optional[str] = None
+    short_description: Optional[str] = None
+    long_description: Optional[str] = None
     pricing: PricingConfig
+    available_options: list[str] = ["accommodation", "food", "bundled"]
