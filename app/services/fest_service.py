@@ -90,7 +90,7 @@ async def has_transactions(transactions_col: AsyncIOMotorCollection, fest_id: st
     count = await transactions_col.count_documents(
         {
             "fest_id": fest_id,
-            "status": {"$in": ["SUCCESS", "NOTIFIED_SUCCESS"]},
+            "status": {"$in": ["SUCCESS", "NOTIFIED_SUCCESS", "NOTIFIED_FAILURE"]},
         }
     )
     return count > 0

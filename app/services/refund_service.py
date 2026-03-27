@@ -11,7 +11,7 @@ from redis.asyncio import Redis
 from app.core.config import Settings
 from app.core.database import get_fests_col, get_transactions_col
 from app.core.exceptions import EaseBuzzRefundError, RefundNotAllowedError, TransactionNotFoundError
-from app.core.redis_client import release_seat
+from app.core.redis_client import release_confirmed_seat
 from app.models.transaction import TransactionDB, TxStatus
 
 logger = logging.getLogger(__name__)
@@ -119,9 +119,9 @@ async def initiate_refund(
         }},
     )
 
-    # Release the accommodation seat back into Redis
+    # Release a previously confirmed seat back into Redis
     if transaction.booking.accommodation_days > 0:
-        await release_seat(redis, transaction.fest_id, internal_tx_id)
+        await release_confirmed_seat(redis, transaction.fest_id, internal_tx_id)
 
     logger.info(
         "Refund successful",

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
         "https://www.accommodationstiet.shop,"
         # "https://thapar-outreach-payment-ui.vercel.app"
     )
-    # CORS_ALLOW_ORIGIN_REGEX: str = r"https://.*\.vercel\.app"
+    CORS_ALLOW_ORIGIN_REGEX: str = ""
 
     # Admin
     ADMIN_API_KEY: str

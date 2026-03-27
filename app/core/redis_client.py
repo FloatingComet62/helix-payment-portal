@@ -104,6 +104,19 @@ async def release_seat(redis: Redis, fest_id: str, internal_tx_id: str) -> None:
         )
 
 
+async def release_confirmed_seat(redis: Redis, fest_id: str, internal_tx_id: str) -> None:
+    """
+    Called on refund of a previously successful payment.
+    The success path already deleted the reservation key, so refunds must
+    increment the seat counter unconditionally to return inventory.
+    """
+    await redis.incr(_seat_key(fest_id))
+    logger.info(
+        "Confirmed seat released after refund",
+        extra={"fest_id": fest_id, "internal_tx_id": internal_tx_id},
+    )
+
+
 # ── Startup initialization ────────────────────────────────────────────────────
 
 async def init_all_seats(
