@@ -91,9 +91,43 @@ Display a form to collect the following fields from the user. All are required.
 
 > **Do not ask the user for `fest_id` or `origin_user_id`** — these come from the URL params and are passed silently.
 
+### Booking options — show only what's available
+
+Call `GET /portal/fests/{fest_id}` on page load and check the `available_options` field before rendering the booking form. Only show the options the fest supports:
+
+```javascript
+// available_options is an array of: "accommodation", "food", "bundled"
+const showAccommodation = festData.available_options.includes("accommodation")
+                       || festData.available_options.includes("bundled");
+const showFood          = festData.available_options.includes("food")
+                       || festData.available_options.includes("bundled");
+```
+
+If a fest only offers food (e.g. `available_options: ["food"]`), hide the accommodation days input and send `accommodation_days: 0`.
+
+### Fest display info
+
+The `GET /portal/fests/{fest_id}` response also includes optional display fields you can render at the top of the booking page:
+
+| Field | Type | Description |
+|---|---|---|
+| `event_dates` | string \| null | Human-readable event date string, e.g. `"March 28–30, 2026"` |
+| `short_description` | string \| null | One-line tagline for the fest |
+| `long_description` | string \| null | Full description / about text |
+
 ### Pricing display (optional but recommended)
 
-Before the user submits, you can display estimated pricing. Call `GET /portal/fests/{fest_id}` to fetch the fest's pricing config and show accommodation/food rates. The exact final amounts are always returned by `POST /payment/initiate` — treat those as authoritative.
+Before the user submits, you can display estimated pricing. Use the fest's `pricing` object (returned by `GET /portal/fests/{fest_id}`) to show accommodation/food rates.
+
+**Pricing mode reference:**
+
+| Mode | Fields to display | Rate formula |
+|---|---|---|
+| `fixed` | `accommodation_price`, `food_price`, `bundled_price` | Flat fee per option (days not used) |
+| `per_day` | `addon.accommodation_per_day`, `addon.food_per_day` | Rate × days booked |
+| `bundled` | `addon.accommodation_per_day`, `addon.food_per_day`, `addon.bundled_discount_percent` | Rate × days; discount applied when both are booked |
+
+The exact final amounts are always returned by `POST /payment/initiate` — treat those as authoritative.
 
 ---
 

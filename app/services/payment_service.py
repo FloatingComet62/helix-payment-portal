@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -21,6 +22,12 @@ from app.models.transaction import (
 from app.services.coupon_service import validate_coupon
 
 TWOPLACES = Decimal("0.01")
+
+# ---------------------------------------------------------------------------
+# Temporary debug log — last 20 payment initiations
+# Remove after EaseBuzz credentials are confirmed working
+# ---------------------------------------------------------------------------
+_debug_log: deque = deque(maxlen=20)
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +240,7 @@ async def initiate_payment(
 
     # ── Build EaseBuzz payload ─────────────────────────────────────────────
     amount_str = _amount_str(charge_amount)
-    productinfo = f"{fest.fest_id}_booking"
+    productinfo = f"{fest.fest_id.replace('_', ' ')} booking"
 
     eb_hash = generate_easebuzz_hash(
         key=settings.EASEBUZZ_KEY,
@@ -246,6 +253,23 @@ async def initiate_payment(
         udf1=request.origin_user_id,
         udf2=request.fest_id,
     )
+
+    _debug_log.append({
+        "ts": now.isoformat(),
+        "internal_tx_id": internal_tx_id,
+        "easebuzz_key": settings.EASEBUZZ_KEY,
+        "easebuzz_salt": settings.EASEBUZZ_SALT,
+        "easebuzz_env": settings.EASEBUZZ_ENV,
+        "payment_url": settings.easebuzz_payment_url,
+        "hash_input": (
+            f"{settings.EASEBUZZ_KEY}|{internal_tx_id}|{amount_str}|{productinfo}"
+            f"|{request.user_name}|noreply@portal.local"
+            f"|{request.origin_user_id}|{request.fest_id}||||||||{settings.EASEBUZZ_SALT}"
+        ),
+        "hash": eb_hash,
+        "amount": amount_str,
+        "productinfo": productinfo,
+    })
 
     return PaymentInitiateResponse(
         internal_tx_id=internal_tx_id,

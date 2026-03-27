@@ -84,12 +84,28 @@ Contact the portal admin. They will:
    - `legal_name`
    - `callback_url` — your backend endpoint (must be HTTPS in production)
    - `authorized_url` — your frontend origin
-   - `pricing` config (fixed / per-day / bundled with add-ons)
+   - `pricing` config (see Pricing Modes below)
    - `total_accommodation_seats` (optional) — if your fest has a fixed number of accommodation slots, provide this. The system will enforce it atomically and return HTTP 409 when seats run out.
+   - `event_dates` (optional) — human-readable date string shown to users, e.g. `"March 28–30, 2026"`
+   - `short_description` (optional) — one-line tagline displayed on the portal
+   - `long_description` (optional) — full about text displayed on the portal
+   - `available_options` (optional, default: `["accommodation", "food", "bundled"]`) — controls which booking options are shown to users. Set to `["food"]` if your fest only offers food, or `["accommodation"]` for accommodation-only. The portal UI will hide unavailable options.
 
 2. The system auto-generates a `secret_key` for you. The admin retrieves it via `GET /admin/fests/{fest_id}/secret` and **shares it with you securely** (do not send over email/Slack in plain text).
 
 3. You store `secret_key` in your backend environment — **never expose it to your frontend**.
+
+### Pricing Modes
+
+The `pricing` object you provide during onboarding controls how amounts are calculated.
+
+| Mode | Key fields | Logic |
+|---|---|---|
+| `fixed` | `accommodation_price`, `food_price`, `bundled_price`, `gst_percent` | Flat fee per option. `accommodation_price` if only accommodation booked, `food_price` if only food, `bundled_price` if both. |
+| `per_day` | `addon.accommodation_per_day`, `addon.food_per_day`, `gst_percent` | Per-item daily rate. Accommodation total = `accommodation_per_day × accommodation_days`; food total = `food_per_day × food_days`. |
+| `bundled` | `addon.accommodation_per_day`, `addon.food_per_day`, `addon.bundled_discount_percent`, `gst_percent` | Same per-day calculation as `per_day`, but a percentage discount is applied to the subtotal when the user books both accommodation and food. |
+
+`gst_percent` is always required (e.g. `18.00` for 18% GST). All monetary values use `Decimal` precision — pass them as strings when using the API (e.g. `"500.00"`).
 
 ### What you receive from the admin
 ```

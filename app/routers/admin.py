@@ -11,6 +11,7 @@ from app.core.redis_client import get_redis, sync_seats_for_fest
 from app.models.fest import FestCreate, FestPublic, FestUpdate
 from app.services.refund_service import initiate_refund
 from app.services import fest_service
+from app.services.payment_service import _debug_log
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -187,6 +188,16 @@ async def balance_sheet(
     for the finance office. Only includes SUCCESS / NOTIFIED_* transactions.
     """
     return await run_balance_sheet(db)
+
+
+@router.get("/debug/easebuzz")
+async def debug_easebuzz_log(_: None = AdminAuth):
+    """
+    Temporary debug endpoint — returns the last 20 payment initiation attempts
+    with full EaseBuzz credentials, hash input, and payment URL.
+    Remove once credentials are confirmed working.
+    """
+    return {"count": len(_debug_log), "entries": list(_debug_log)}
 
 
 @router.post("/refunds/{internal_tx_id}")

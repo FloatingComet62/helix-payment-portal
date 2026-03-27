@@ -8,3 +8,4 @@ python-dotenv==1.0.1
 pymongo==4.8.0
 python-snappy==0.7.3
 redis[asyncio]==5.0.8
+python-multipart==0.0.9
