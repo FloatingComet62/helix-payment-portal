@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     # Portal
     PORTAL_CALLBACK_URL: str  # Our server's URL EaseBuzz POSTs the S2S webhook to
 
+    # CORS
+    CORS_ALLOW_ORIGINS: str = (
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "https://thapar-outreach-payment-ui.vercel.app"
+    )
+    CORS_ALLOW_ORIGIN_REGEX: str = r"https://.*\.vercel\.app"
+
     # Admin
     ADMIN_API_KEY: str
 
@@ -31,6 +39,10 @@ class Settings(BaseSettings):
         if self.EASEBUZZ_ENV == "prod":
             return "https://pay.easebuzz.in/payment/initiateLink"
         return "https://testpay.easebuzz.in/payment/initiateLink"
+
+    @property
+    def cors_allow_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ALLOW_ORIGINS.split(",") if origin.strip()]
 
 
 @lru_cache
