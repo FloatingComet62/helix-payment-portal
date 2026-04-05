@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, Request
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.aggregations.balance_sheet import run_balance_sheet
@@ -12,6 +14,8 @@ from app.models.fest import FestCreate, FestPublic, FestUpdate
 from app.services.refund_service import initiate_refund
 from app.services import fest_service
 from app.services.payment_service import _debug_log
+from app.models.transaction import TransactionDB, TxStatus
+from app.services.webhook_dispatch import dispatch_to_fest
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -22,6 +26,112 @@ def _verify_admin_key(x_admin_key: str = Header(..., alias="X-Admin-Key")) -> No
 
 
 AdminAuth = Depends(_verify_admin_key)
+
+
+def _status_group_to_db_values(status: str | None) -> list[str] | None:
+    if not status:
+        return None
+    normalized = status.lower()
+    if normalized == "pending":
+        return [TxStatus.PENDING.value]
+    if normalized == "failed":
+        return [TxStatus.FAILED.value]
+    if normalized == "success":
+        return [
+            TxStatus.SUCCESS.value,
+            TxStatus.NOTIFIED_SUCCESS.value,
+            TxStatus.NOTIFIED_FAILURE.value,
+            TxStatus.REFUNDED.value,
+        ]
+    return None
+
+
+def _callback_group_to_db_values(callback_status: str | None) -> list[str] | None:
+    if not callback_status:
+        return None
+    normalized = callback_status.lower()
+    if normalized == "sent":
+        return [TxStatus.NOTIFIED_SUCCESS.value]
+    if normalized == "failed":
+        return [TxStatus.NOTIFIED_FAILURE.value]
+    if normalized == "pending":
+        return [TxStatus.PENDING.value, TxStatus.SUCCESS.value]
+    if normalized == "skipped":
+        return [TxStatus.FAILED.value, TxStatus.REFUNDED.value]
+    return None
+
+
+def _to_portal_status(db_status: str) -> str:
+    if db_status in (TxStatus.PENDING.value,):
+        return "pending"
+    if db_status in (TxStatus.FAILED.value,):
+        return "failed"
+    return "success"
+
+
+def _to_callback_status(db_status: str) -> str:
+    if db_status == TxStatus.NOTIFIED_SUCCESS.value:
+        return "sent"
+    if db_status == TxStatus.NOTIFIED_FAILURE.value:
+        return "failed"
+    if db_status == TxStatus.SUCCESS.value:
+        return "pending"
+    if db_status == TxStatus.PENDING.value:
+        return "pending"
+    return "skipped"
+
+
+def _to_portal_transaction(doc: dict) -> dict:
+    booking = doc.get("booking", {}) or {}
+
+    def _to_amount(value: str | float | int | None) -> float:
+        if value is None:
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    db_status = str(doc.get("status", TxStatus.PENDING.value))
+    initiated_at = doc.get("initiated_at")
+    completed_at = doc.get("completed_at")
+
+    return {
+        "merchantOrderId": doc.get("internal_tx_id"),
+        "festId": doc.get("fest_id"),
+        "eventId": None,
+        "teamId": None,
+        "teamName": None,
+        "userName": doc.get("user_name"),
+        "userEmail": None,
+        "userPhone": None,
+        "collegeName": None,
+        "paymentType": "accommodation",
+        "status": _to_portal_status(db_status),
+        "callbackStatus": _to_callback_status(db_status),
+        "originalAmount": _to_amount(doc.get("base_amount")),
+        "finalAmount": _to_amount(doc.get("final_net_credited")),
+        "createdAt": initiated_at.isoformat() if isinstance(initiated_at, datetime) else None,
+        "completedAt": completed_at.isoformat() if isinstance(completed_at, datetime) else None,
+        "callbackAttempts": len(doc.get("notification_logs", []) or []),
+        "callbackLastError": (doc.get("notification_logs", []) or [{}])[-1].get("error") if (doc.get("notification_logs", []) or []) else None,
+        "paymentIntentions": {
+            "eventRegistration": None,
+            "accommodation": {
+                "totalAmount": _to_amount(booking.get("accommodation_amount")),
+            },
+            "food": {
+                "totalAmount": _to_amount(booking.get("food_amount")),
+            },
+        },
+    }
+
+
+def _safe_float(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @router.post("/fests", response_model=FestPublic, status_code=201)
@@ -131,6 +241,195 @@ async def check_fest_transactions(
             fests_with_txns.append(fest_id)
     
     return {"fests_with_transactions": fests_with_txns}
+
+
+@router.get("/transactions")
+async def list_transactions(
+    fest_id: str | None = Query(None, alias="festId"),
+    status: str | None = None,
+    callback_status: str | None = Query(None, alias="callbackStatus"),
+    event_id: str | None = Query(None, alias="eventId"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    # realbackend currently has no event-level transaction field.
+    if event_id:
+        return {
+            "transactions": [],
+            "total": 0,
+            "page": page,
+            "pageSize": page_size,
+            "hasMore": False,
+        }
+
+    query: dict = {}
+    if fest_id:
+        query["fest_id"] = fest_id
+
+    status_values = _status_group_to_db_values(status)
+    callback_values = _callback_group_to_db_values(callback_status)
+
+    if status_values and callback_values:
+        query["status"] = {"$in": [value for value in status_values if value in callback_values]}
+    elif status_values:
+        query["status"] = {"$in": status_values}
+    elif callback_values:
+        query["status"] = {"$in": callback_values}
+
+    tx_col = get_transactions_col(db)
+    skip = (page - 1) * page_size
+
+    total = await tx_col.count_documents(query)
+    docs = (
+        await tx_col.find(query)
+        .sort("initiated_at", -1)
+        .skip(skip)
+        .limit(page_size)
+        .to_list(length=page_size)
+    )
+
+    return {
+        "transactions": [_to_portal_transaction(doc) for doc in docs],
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "hasMore": (skip + page_size) < total,
+    }
+
+
+@router.get("/transactions/stats/{fest_id}")
+async def get_transaction_stats(
+    fest_id: str,
+    event_id: str | None = Query(None, alias="eventId"),
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    if event_id:
+        return {
+            "festId": fest_id,
+            "totalTransactions": 0,
+            "successfulTransactions": 0,
+            "failedTransactions": 0,
+            "pendingTransactions": 0,
+            "totalCollected": 0,
+            "accommodationTotal": 0,
+            "foodTotal": 0,
+            "eventTotal": 0,
+        }
+
+    tx_col = get_transactions_col(db)
+    query = {"fest_id": fest_id}
+
+    total = await tx_col.count_documents(query)
+    pending = await tx_col.count_documents({**query, "status": TxStatus.PENDING.value})
+    failed = await tx_col.count_documents({**query, "status": TxStatus.FAILED.value})
+    successful = await tx_col.count_documents(
+        {
+            **query,
+            "status": {
+                "$in": [
+                    TxStatus.SUCCESS.value,
+                    TxStatus.NOTIFIED_SUCCESS.value,
+                    TxStatus.NOTIFIED_FAILURE.value,
+                    TxStatus.REFUNDED.value,
+                ]
+            },
+        }
+    )
+
+    docs = await tx_col.find(query).to_list(length=5000)
+
+    def _sum_amount(field: str) -> float:
+        total_value = 0.0
+        for doc in docs:
+            value = doc.get(field)
+            try:
+                total_value += float(value)
+            except (TypeError, ValueError):
+                continue
+        return total_value
+
+    return {
+        "festId": fest_id,
+        "totalTransactions": total,
+        "successfulTransactions": successful,
+        "failedTransactions": failed,
+        "pendingTransactions": pending,
+        "totalCollected": _sum_amount("final_net_credited"),
+        "accommodationTotal": sum(
+            _safe_float((doc.get("booking", {}) or {}).get("accommodation_amount", 0)) for doc in docs
+        ),
+        "foodTotal": sum(
+            _safe_float((doc.get("booking", {}) or {}).get("food_amount", 0)) for doc in docs
+        ),
+        "eventTotal": 0,
+    }
+
+
+@router.get("/transactions/{merchant_order_id}")
+async def get_transaction(
+    merchant_order_id: str,
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    tx_col = get_transactions_col(db)
+    doc = await tx_col.find_one({"internal_tx_id": merchant_order_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return _to_portal_transaction(doc)
+
+
+@router.post("/transactions/{merchant_order_id}/retry-callback")
+async def retry_callback(
+    merchant_order_id: str,
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    tx_col = get_transactions_col(db)
+    doc = await tx_col.find_one({"internal_tx_id": merchant_order_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    tx = TransactionDB(**{k: v for k, v in doc.items() if k != "_id"})
+    if tx.status not in (TxStatus.SUCCESS, TxStatus.NOTIFIED_FAILURE):
+        raise HTTPException(
+            status_code=400,
+            detail="Can only retry callbacks for successful transactions",
+        )
+
+    fests_col = get_fests_col(db)
+    fest = await fest_service.get_fest_db(fests_col, tx.fest_id)
+
+    await tx_col.update_one(
+        {"internal_tx_id": merchant_order_id},
+        {
+            "$set": {
+                "status": TxStatus.SUCCESS.value,
+                "completed_at": datetime.now(tz=timezone.utc),
+            }
+        },
+    )
+
+    latest = await tx_col.find_one({"internal_tx_id": merchant_order_id})
+    if not latest:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    latest_tx = TransactionDB(**{k: v for k, v in latest.items() if k != "_id"})
+    await dispatch_to_fest(latest_tx, fest, db)
+
+    updated = await tx_col.find_one({"internal_tx_id": merchant_order_id})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    normalized = _to_portal_transaction(updated)
+    return {
+        "message": "Callback retried",
+        "callbackStatus": normalized.get("callbackStatus"),
+        "callbackAttempts": normalized.get("callbackAttempts", 0),
+        "callbackLastError": normalized.get("callbackLastError"),
+    }
 
 
 @router.get("/fests/{fest_id}/secret")
