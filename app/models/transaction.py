@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class TxStatus(str, Enum):
@@ -49,10 +49,27 @@ class TransactionCreate(BaseModel):
     fest_id: str
     origin_user_id: str   # Always required — provided by fest frontend in redirect
     user_name: str
+    user_phone: str
     user_state: str
     user_district: str
     booking: BookingDetail
     coupon_code: Optional[str] = None
+
+    @field_validator("user_phone", mode="before")
+    @classmethod
+    def validate_user_phone(cls, value):
+        if not isinstance(value, str):
+            raise ValueError("user_phone is required")
+
+        normalized = value.strip().replace(" ", "")
+        if not normalized.startswith("+91"):
+            raise ValueError("user_phone must start with +91")
+
+        local = normalized[3:]
+        if len(local) != 10 or not local.isdigit():
+            raise ValueError("user_phone must be in +91XXXXXXXXXX format")
+
+        return normalized
 
 
 class TransactionDB(BaseModel):
@@ -74,6 +91,7 @@ class TransactionDB(BaseModel):
     fest_id: str
     origin_user_id: str
     user_name: str
+    user_phone: str
     user_state: str
     user_district: str
     booking: BookingDetail

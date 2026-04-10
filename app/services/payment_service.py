@@ -174,7 +174,6 @@ async def initiate_payment(
     request: TransactionCreate,
     redis: Redis,
     user_email: str = "noreply@portal.local",
-    user_phone: str = "9999999999",
 ) -> PaymentInitiateResponse:
     """
     1. Check seat availability atomically in Redis (if fest has a seat cap).
@@ -224,6 +223,7 @@ async def initiate_payment(
         fest_id=request.fest_id,
         origin_user_id=request.origin_user_id,
         user_name=request.user_name,
+        user_phone=request.user_phone,
         user_state=request.user_state,
         user_district=request.user_district,
         booking=booking_with_amounts,
@@ -271,6 +271,9 @@ async def initiate_payment(
         "productinfo": productinfo,
     })
 
+    # EaseBuzz expects a 10-digit mobile number without +91 prefix.
+    gateway_phone = request.user_phone[-10:]
+
     return PaymentInitiateResponse(
         internal_tx_id=internal_tx_id,
         easebuzz_payment_url=settings.easebuzz_payment_url,
@@ -281,7 +284,7 @@ async def initiate_payment(
         productinfo=productinfo,
         firstname=request.user_name,
         email=user_email,
-        phone=user_phone,
+        phone=gateway_phone,
         udf1=request.origin_user_id,
         udf2=request.fest_id,
         udf3="",

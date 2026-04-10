@@ -104,7 +104,7 @@ def _to_portal_transaction(doc: dict) -> dict:
         "teamName": None,
         "userName": doc.get("user_name"),
         "userEmail": None,
-        "userPhone": None,
+        "userPhone": doc.get("user_phone"),
         "collegeName": None,
         "paymentType": "accommodation",
         "status": _to_portal_status(db_status),
