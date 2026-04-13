@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from json import JSONDecodeError
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
@@ -88,6 +89,101 @@ def _unwrap_tx_data(body: Any) -> dict[str, Any] | None:
     return candidate
 
 
+def _parse_text_payload(text: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    body = text.strip()
+    if not body:
+        return parsed
+
+    # Explicit patterns first
+    patterns = {
+        "settlement_amount": r"settlement\s*amount\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
+        "service_charge": r"service\s*charge\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
+        "service_charge_gst": r"(?:service\s*charge\s*gst|gst\s*on\s*service\s*charge|service\s*tax)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
+        "net_amount_debit": r"(?:net\s*amount\s*debit|net_amount_debit|net\s*amount)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
+        "mode": r"(?:payment\s*mode|mode)\s*[:=]\s*([A-Za-z0-9_]+)",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, body, flags=re.IGNORECASE)
+        if match:
+            parsed[key] = match.group(1).strip()
+
+    # Generic key=value / key:value tokens
+    for match in re.finditer(r"([A-Za-z_ ]{2,40})\s*[:=]\s*([A-Za-z0-9._-]+)", body):
+        raw_key = match.group(1).strip()
+        raw_value = match.group(2).strip()
+        normalized = _normalize_key(raw_key)
+        if normalized and raw_value:
+            parsed.setdefault(normalized, raw_value)
+
+    return parsed
+
+
+def derive_fee_and_net_from_payload(
+    payload: dict[str, Any],
+    charged_amount_str: str,
+) -> tuple[str, str, str] | None:
+    charged = _parse_decimal(charged_amount_str)
+    if charged is None:
+        return None
+
+    settlement_amount = _extract_decimal(
+        payload,
+        "settlement_amount",
+        "settled_amount",
+        "amount_settled",
+        "settlement_amt",
+    )
+    service_charge = _extract_decimal(
+        payload,
+        "service_charge",
+        "servicecharge",
+        "gateway_charge",
+        "pg_charge",
+        "charges",
+    )
+    service_charge_gst = _extract_decimal(
+        payload,
+        "service_charge_gst",
+        "gst_on_service_charge",
+        "service_tax",
+        "tax_on_service_charge",
+        "gst",
+    )
+    net_amount = _extract_decimal(
+        payload,
+        "net_amount_debit",
+        "net_amount",
+        "merchant_net_amount",
+        "amount_to_merchant",
+    )
+
+    net: Decimal | None = None
+    fee: Decimal | None = None
+    source = ""
+
+    if settlement_amount is not None and Decimal("0.00") <= settlement_amount <= charged:
+        net = settlement_amount
+        fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
+        source = "settlement_amount"
+    elif service_charge is not None:
+        fee_candidate = service_charge + (service_charge_gst or Decimal("0.00"))
+        fee_candidate = fee_candidate.quantize(TWOPLACES, ROUND_HALF_UP)
+        if Decimal("0.00") <= fee_candidate <= charged:
+            fee = fee_candidate
+            net = (charged - fee).quantize(TWOPLACES, ROUND_HALF_UP)
+            source = "service_charge(+gst)"
+
+    if net is None and net_amount is not None and Decimal("0.00") <= net_amount <= charged:
+        net = net_amount
+        fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
+        source = "net_amount_debit"
+
+    if net is None or fee is None:
+        return None
+    return (f"{fee:.2f}", f"{net:.2f}", source)
+
+
 async def fetch_and_update_actual_fee(
     tx_col: AsyncIOMotorCollection,
     internal_tx_id: str,
@@ -133,12 +229,21 @@ async def fetch_and_update_actual_fee(
         try:
             body = response.json()
         except JSONDecodeError:
-            logger.warning(
-                "EaseBuzz fetch API non-JSON for %s: body=%r",
-                internal_tx_id,
-                response.text[:300],
-            )
-            return False
+            text_payload = _parse_text_payload(response.text)
+            if text_payload:
+                logger.warning(
+                    "EaseBuzz fetch API non-JSON for %s; parsed text payload keys=%s",
+                    internal_tx_id,
+                    list(text_payload.keys()),
+                )
+                body = text_payload
+            else:
+                logger.warning(
+                    "EaseBuzz fetch API non-JSON for %s: body=%r",
+                    internal_tx_id,
+                    response.text[:300],
+                )
+                return False
 
         tx_data = _unwrap_tx_data(body)
         if tx_data is None:
@@ -158,60 +263,8 @@ async def fetch_and_update_actual_fee(
 
         mode = str(tx_data.get("mode") or tx_data.get("payment_mode") or "").strip()
 
-        # Prefer settlement amount (what actually reaches bank) when present.
-        settlement_amount = _extract_decimal(
-            tx_data,
-            "settlement_amount",
-            "settled_amount",
-            "amount_settled",
-            "settlement_amt",
-        )
-        service_charge = _extract_decimal(
-            tx_data,
-            "service_charge",
-            "servicecharge",
-            "gateway_charge",
-            "pg_charge",
-            "charges",
-        )
-        service_charge_gst = _extract_decimal(
-            tx_data,
-            "service_charge_gst",
-            "gst_on_service_charge",
-            "service_tax",
-            "tax_on_service_charge",
-            "gst",
-        )
-        net_amount = _extract_decimal(
-            tx_data,
-            "net_amount_debit",
-            "net_amount",
-            "merchant_net_amount",
-            "amount_to_merchant",
-        )
-
-        net: Decimal | None = None
-        fee: Decimal | None = None
-        source = ""
-
-        if settlement_amount is not None and Decimal("0.00") <= settlement_amount <= charged:
-            net = settlement_amount
-            fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
-            source = "settlement_amount"
-        elif service_charge is not None:
-            fee_candidate = service_charge + (service_charge_gst or Decimal("0.00"))
-            fee_candidate = fee_candidate.quantize(TWOPLACES, ROUND_HALF_UP)
-            if Decimal("0.00") <= fee_candidate <= charged:
-                fee = fee_candidate
-                net = (charged - fee).quantize(TWOPLACES, ROUND_HALF_UP)
-                source = "service_charge(+gst)"
-
-        if net is None and net_amount is not None and Decimal("0.00") <= net_amount <= charged:
-            net = net_amount
-            fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
-            source = "net_amount_debit"
-
-        if net is None or fee is None:
+        derived = derive_fee_and_net_from_payload(tx_data, charged_amount_str)
+        if not derived:
             logger.warning(
                 "Could not derive settlement for %s. fields=%s",
                 internal_tx_id,
@@ -225,9 +278,11 @@ async def fetch_and_update_actual_fee(
                 )
             return False
 
+        fee_str, net_str, source = derived
+
         update: dict = {
-            "easebuzz_transaction_fee": f"{fee:.2f}",
-            "final_net_credited": f"{net:.2f}",
+            "easebuzz_transaction_fee": fee_str,
+            "final_net_credited": net_str,
         }
         if mode:
             update["payment_mode"] = mode
@@ -241,8 +296,8 @@ async def fetch_and_update_actual_fee(
             "Actual fee updated for %s: charged=%s net=%s fee=%s mode=%s source=%s",
             internal_tx_id,
             charged_amount_str,
-            net,
-            fee,
+            net_str,
+            fee_str,
             mode,
             source,
         )

@@ -14,7 +14,10 @@ from app.core.redis_client import confirm_seat, get_redis, release_seat
 from app.core.security import verify_easebuzz_response_hash
 from app.models.transaction import TransactionDB, TxStatus
 from app.services import fest_service
-from app.services.easebuzz_fetch_service import fetch_and_update_actual_fee
+from app.services.easebuzz_fetch_service import (
+    derive_fee_and_net_from_payload,
+    fetch_and_update_actual_fee,
+)
 from app.services.webhook_dispatch import dispatch_to_fest
 
 logger = logging.getLogger(__name__)
@@ -84,8 +87,9 @@ async def easebuzz_s2s_webhook(
     easebuzz_txid = data.get("easepayid", "")
     payment_status = data.get("status", "").lower()
 
-    # mode is included in the S2S webhook; net_amount_debit is NOT reliable here —
-    # we call the EaseBuzz fetch API as a background task to get the actual settlement.
+    # mode is included in the S2S webhook.
+    # We derive fee/net from webhook fields immediately where possible,
+    # then run fetch API in background as reconciliation.
     payment_mode = data.get("mode", "")  # e.g. "UPI", "CC", "DC", "NB"
     charged_amount = data.get("amount", "")  # amount charged to user (reliable from webhook)
 
@@ -93,7 +97,7 @@ async def easebuzz_s2s_webhook(
     now = datetime.now(tz=timezone.utc)
 
     if payment_status == "success":
-        # Set mode immediately from webhook; fee/net will be filled in by the fetch background task
+        # Set mode immediately from webhook and derive fee/net immediately when available.
         fee_update: dict = {
             "status": TxStatus.SUCCESS.value,
             "easebuzz_txid": easebuzz_txid,
@@ -101,6 +105,22 @@ async def easebuzz_s2s_webhook(
         }
         if payment_mode:
             fee_update["payment_mode"] = payment_mode
+        if charged_amount:
+            derived = derive_fee_and_net_from_payload(data, charged_amount)
+            if derived:
+                fee_str, net_str, source = derived
+                fee_update["easebuzz_transaction_fee"] = fee_str
+                fee_update["final_net_credited"] = net_str
+                logger.info(
+                    "Derived fee/net from webhook payload",
+                    extra={
+                        "internal_tx_id": internal_tx_id,
+                        "charged": charged_amount,
+                        "fee": fee_str,
+                        "net": net_str,
+                        "source": source,
+                    },
+                )
 
         # Atomic: only updates if the transaction is still PENDING.
         # Returns None if already processed (idempotency guard).
@@ -129,8 +149,7 @@ async def easebuzz_s2s_webhook(
 
         background_tasks.add_task(dispatch_to_fest, transaction, fest, db)
 
-        # Fetch actual settlement amount from EaseBuzz API in the background
-        # (S2S webhook does not include net_amount_debit reliably)
+        # Reconcile settlement details from EaseBuzz fetch API in the background.
         if charged_amount:
             background_tasks.add_task(
                 fetch_and_update_actual_fee,
@@ -143,7 +162,7 @@ async def easebuzz_s2s_webhook(
             )
 
         logger.info(
-            "Transaction marked SUCCESS, dispatch and fee-fetch queued",
+            "Transaction marked SUCCESS, dispatch and fee reconciliation queued",
             extra={"internal_tx_id": internal_tx_id},
         )
 

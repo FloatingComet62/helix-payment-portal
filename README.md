@@ -130,15 +130,15 @@ Portal Frontend
             │  taxable_amount    = 1330.00 - 100.00  = 1230.00
             │  gst_amount        = 1230.00 × 18/100  =  221.40   ◀── BEFORE gateway
             │  charge_amount     = 1230.00 + 221.40  = 1451.40   ← EaseBuzz charges user this
-            │  easebuzz_fee      = 1451.40 × 2/100   =   29.03
-            │  final_net_credited= 1451.40 - 29.03   = 1422.37   ← fest receives this
+            │  easebuzz_fee/final_net_credited are unknown at initiation
+            │  and are filled after webhook using EaseBuzz settlement fields.
             │
             │  Create TransactionDB in MongoDB
             │  { internal_tx_id: UUID4, status: PENDING,
             │    base_amount: "1330.00", gst_amount: "221.40",
             │    coupon_discount_applied: "100.00",
-            │    easebuzz_transaction_fee: "29.03",
-            │    final_net_credited: "1422.37",
+            │    easebuzz_transaction_fee: "0.00",
+            │    final_net_credited: "0.00",
             │    initiated_at: ISO8601, ... }
             │
             │  generate_easebuzz_hash()
@@ -330,10 +330,14 @@ gst_amount      = taxable_amount × gst_percent / 100
 charge_amount   = taxable_amount + gst_amount
                   ↑ this is what EaseBuzz charges the user
 
-easebuzz_fee    = charge_amount × EASEBUZZ_FEE_PERCENT / 100
+easebuzz_fee
+  = derived from EaseBuzz settlement fields in this priority:
+      1) settlement_amount          → fee = charge_amount - settlement_amount
+      2) service_charge + GST       → fee = service_charge + service_charge_gst
+      3) net_amount_debit/net_amount→ fee = charge_amount - net_amount
 
 final_net_credited = charge_amount − easebuzz_fee
-                     ↑ this is what the fest receives
+                     ↑ this is what the fest receives in bank settlement
 ```
 
 All arithmetic uses Python `decimal.Decimal` with `ROUND_HALF_UP`.
@@ -441,7 +445,7 @@ docker run -p 8000:8000 --env-file .env central-payment
 | `EASEBUZZ_ENV` | No | `test` | `test` or `prod` |
 | `PORTAL_CALLBACK_URL` | Yes | — | Our server's URL — EaseBuzz POSTs here |
 | `ADMIN_API_KEY` | Yes | — | Shared secret for `X-Admin-Key` header |
-| `EASEBUZZ_FEE_PERCENT` | No | `2.00` | Platform fee percentage |
+| `EASEBUZZ_FEE_PERCENT` | No | `2.00` | Legacy/default fee percent (actual fee is derived from EaseBuzz settlement fields) |
 
 ---
 

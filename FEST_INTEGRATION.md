@@ -317,8 +317,8 @@ We serialize the payload with `sort_keys=True` and no extra spaces before signin
 | `base_amount` | string | Raw booking cost before discounts/GST. |
 | `coupon_discount_applied` | string | Discount from coupon (`"0.00"` if no coupon used). |
 | `gst_amount` | string | GST charged on `(base - discount)`. |
-| `easebuzz_transaction_fee` | string | Platform fee deducted (`"0.00"` on FAILED). |
-| `final_net_credited` | string | What your fest actually receives (`"0.00"` on FAILED). |
+| `easebuzz_transaction_fee` | string | Gateway fee derived from EaseBuzz settlement fields (`"0.00"` on FAILED). |
+| `final_net_credited` | string | Actual settled amount that reaches your fest (`"0.00"` on FAILED). |
 
 > All monetary values are strings with exactly 2 decimal places. Parse them with `Decimal`, not `float`.
 

@@ -101,6 +101,8 @@ async def _run_backfill(args: argparse.Namespace) -> None:
         query: dict[str, Any] = {"status": {"$in": statuses}}
         if args.fest_id:
             query["fest_id"] = args.fest_id
+        if args.tx_id:
+            query["internal_tx_id"] = args.tx_id
 
         projection = {
             "_id": 0,
@@ -194,6 +196,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fest-id",
         help="Backfill only for one fest_id",
+    )
+    parser.add_argument(
+        "--tx-id",
+        help="Backfill only one transaction by internal_tx_id",
     )
     parser.add_argument(
         "--limit",
