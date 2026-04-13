@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, EmailStr, field_validator
 
 
 class TxStatus(str, Enum):
@@ -49,10 +49,12 @@ class TransactionCreate(BaseModel):
     fest_id: str
     origin_user_id: str   # Always required — provided by fest frontend in redirect
     user_name: str
+    user_email: EmailStr  # Collected from payment form; used in EaseBuzz hash
     user_phone: str
     user_state: str
     user_district: str
     booking: BookingDetail
+    selected_events: List[str] = []  # List of event_ids the user selected
     coupon_code: Optional[str] = None
 
     @field_validator("user_phone", mode="before")
@@ -83,24 +85,27 @@ class TransactionDB(BaseModel):
         base_amount              = raw booking cost before any discount/GST
         coupon_discount_applied  = discount from coupon (0.00 if no coupon)
         gst_amount               = GST on (base_amount - coupon_discount) — computed BEFORE gateway
-        easebuzz_transaction_fee = platform fee on the taxable amount
-        final_net_credited       = charge_amount - easebuzz_fee (what the fest actually receives)
+        easebuzz_transaction_fee = actual platform fee (updated after webhook with real value from EaseBuzz)
+        final_net_credited       = actual net credited to fest (updated after webhook)
     """
     internal_tx_id: str
     easebuzz_txid: Optional[str] = None
     fest_id: str
     origin_user_id: str
     user_name: str
+    user_email: str           # Real email collected from payment form
     user_phone: str
     user_state: str
     user_district: str
     booking: BookingDetail
     base_amount: str
     gst_amount: str
-    easebuzz_transaction_fee: str
+    easebuzz_transaction_fee: str   # "0.00" at initiation; updated with actual after webhook
     coupon_discount_applied: str
-    final_net_credited: str
+    final_net_credited: str         # "0.00" at initiation; updated with actual after webhook
     coupon_code: Optional[str] = None
+    selected_events: List[str] = [] # event_ids chosen by user
+    payment_mode: Optional[str] = None  # "UPI", "CC", "DC", "NB" etc — set by webhook handler
     status: TxStatus = TxStatus.PENDING
     initiated_at: datetime
     completed_at: Optional[datetime] = None

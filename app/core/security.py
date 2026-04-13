@@ -50,22 +50,23 @@ def verify_easebuzz_response_hash(data: dict, salt: str) -> bool:
     """
     Verify the reverse hash sent by EaseBuzz on the S2S webhook.
 
-    Formula:
-        sha512(salt|status||udf5|udf4|udf3|udf2|udf1|email|
-               firstname|productinfo|amount|txnid|key)
+    Formula (all 10 udf fields, reverse order):
+        sha512(salt|status|udf10|udf9|udf8|udf7|udf6|udf5|udf4|udf3|udf2|udf1|
+               email|firstname|productinfo|amount|txnid|key)
 
-    Note the double pipe after status (empty field placeholder).
     Returns True if computed hash matches the hash in the response.
     """
     received_hash = data.get("hash", "")
     hash_str = (
-        f"{salt}|{data.get('status', '')}||||||"
-        f"{data.get('udf5', '')}|{data.get('udf4', '')}|"
-        f"{data.get('udf3', '')}|{data.get('udf2', '')}|"
-        f"{data.get('udf1', '')}|{data.get('email', '')}|"
-        f"{data.get('firstname', '')}|{data.get('productinfo', '')}|"
-        f"{data.get('amount', '')}|{data.get('txnid', '')}|"
-        f"{data.get('key', '')}"
+        f"{salt}|{data.get('status', '')}|"
+        f"{data.get('udf10', '')}|{data.get('udf9', '')}|"
+        f"{data.get('udf8', '')}|{data.get('udf7', '')}|"
+        f"{data.get('udf6', '')}|{data.get('udf5', '')}|"
+        f"{data.get('udf4', '')}|{data.get('udf3', '')}|"
+        f"{data.get('udf2', '')}|{data.get('udf1', '')}|"
+        f"{data.get('email', '')}|{data.get('firstname', '')}|"
+        f"{data.get('productinfo', '')}|{data.get('amount', '')}|"
+        f"{data.get('txnid', '')}|{data.get('key', '')}"
     )
     computed = hashlib.sha512(hash_str.encode("utf-8")).hexdigest()
     return hmac.compare_digest(computed, received_hash)

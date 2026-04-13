@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, HttpUrl, field_serializer
+from pydantic import BaseModel, Field, HttpUrl, field_serializer
 
 
 class AddonPricing(BaseModel):
@@ -41,6 +41,25 @@ class PricingConfig(BaseModel):
         return str(v) if v is not None else None
 
 
+class FestEvent(BaseModel):
+    """A single event within a fest that attendees can register for."""
+    event_id: str          # UUID, generated server-side on creation
+    name: str
+    description: Optional[str] = None
+
+
+class EventSelectionConfig(BaseModel):
+    """
+    Controls whether/how users must select events when booking.
+    enabled=False means the event selection UI is hidden entirely.
+    required=True means the user must pick at least one event before proceeding.
+    max_selections caps how many events a single person can select.
+    """
+    enabled: bool = False
+    required: bool = False
+    max_selections: int = 1
+
+
 class FestCreate(BaseModel):
     fest_id: str          # Unique slug, e.g. "HackTU_2026"
     legal_name: str       # Full legal name of the fest organizer
@@ -52,6 +71,8 @@ class FestCreate(BaseModel):
     pricing: PricingConfig
     available_options: list[str] = ["accommodation", "food", "bundled"]
     total_accommodation_seats: Optional[int] = None  # None = unlimited; set to enforce seat cap
+    events: List[FestEvent] = Field(default_factory=list)
+    event_selection: EventSelectionConfig = Field(default_factory=EventSelectionConfig)
 
 
 class FestDB(FestCreate):
@@ -72,6 +93,8 @@ class FestPublic(BaseModel):
     pricing: PricingConfig
     available_options: list[str] = ["accommodation", "food", "bundled"]
     total_accommodation_seats: Optional[int] = None
+    events: List[FestEvent] = Field(default_factory=list)
+    event_selection: EventSelectionConfig = Field(default_factory=EventSelectionConfig)
     created_at: datetime
 
 
@@ -86,6 +109,7 @@ class FestUpdate(BaseModel):
     pricing: Optional[PricingConfig] = None
     available_options: Optional[list[str]] = None
     total_accommodation_seats: Optional[int] = None
+    event_selection: Optional[EventSelectionConfig] = None
 
 
 class FestListing(BaseModel):
@@ -101,3 +125,5 @@ class FestListing(BaseModel):
     long_description: Optional[str] = None
     pricing: PricingConfig
     available_options: list[str] = ["accommodation", "food", "bundled"]
+    events: List[FestEvent] = Field(default_factory=list)
+    event_selection: EventSelectionConfig = Field(default_factory=EventSelectionConfig)

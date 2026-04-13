@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -19,6 +20,29 @@ from app.services.webhook_dispatch import dispatch_to_fest
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhook", tags=["Webhook"])
+
+TWOPLACES = Decimal("0.01")
+
+
+def _compute_actual_fee_fields(
+    charged_amount_str: str,
+    net_amount_debit_str: str,
+) -> tuple[str, str]:
+    """
+    Compute actual easebuzz_transaction_fee and final_net_credited from webhook data.
+
+    EaseBuzz sends net_amount_debit = what the merchant actually receives after their cut.
+    Fee = charged_amount - net_amount_debit.
+
+    Returns: (easebuzz_transaction_fee_str, final_net_credited_str)
+    """
+    try:
+        charged = Decimal(str(charged_amount_str)).quantize(TWOPLACES, ROUND_HALF_UP)
+        net = Decimal(str(net_amount_debit_str)).quantize(TWOPLACES, ROUND_HALF_UP)
+        fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
+        return f"{fee:.2f}", f"{net:.2f}"
+    except Exception:
+        return "0.00", "0.00"
 
 
 @router.post("/easebuzz")
@@ -41,6 +65,12 @@ async def easebuzz_s2s_webhook(
     SEAT MANAGEMENT:
       SUCCESS → confirm_seat (permanently consumes the Redis reservation)
       FAILURE → release_seat (INCR Redis counter if reservation still alive)
+
+    ACTUAL FEE CALCULATION:
+      EaseBuzz includes net_amount_debit in the webhook — the actual amount
+      credited to the merchant after their fee (which varies by payment mode:
+      UPI=0.5%, CC/DC=~1.5-2%, NB=flat). We compute the real fee from this
+      and update easebuzz_transaction_fee + final_net_credited in the DB.
 
     FAILURE NOTIFICATION: The fest callback is fired for both SUCCESS and
     FAILED outcomes so the fest backend always knows the payment result.
@@ -77,19 +107,44 @@ async def easebuzz_s2s_webhook(
     easebuzz_txid = data.get("easepayid", "")
     payment_status = data.get("status", "").lower()
 
+    # Extract actual fee data from EaseBuzz webhook
+    payment_mode = data.get("mode", "")  # e.g. "UPI", "CC", "DC", "NB"
+    net_amount_debit = data.get("net_amount_debit", "")  # actual amount credited to merchant
+    charged_amount = data.get("amount", "")  # amount charged to user
+
     tx_col = get_transactions_col(db)
     now = datetime.now(tz=timezone.utc)
 
     if payment_status == "success":
+        # Build the fee update — use actual values from EaseBuzz if available
+        fee_update: dict = {
+            "status": TxStatus.SUCCESS.value,
+            "easebuzz_txid": easebuzz_txid,
+            "completed_at": now,
+        }
+        if payment_mode:
+            fee_update["payment_mode"] = payment_mode
+        if net_amount_debit and charged_amount:
+            actual_fee, actual_net = _compute_actual_fee_fields(charged_amount, net_amount_debit)
+            fee_update["easebuzz_transaction_fee"] = actual_fee
+            fee_update["final_net_credited"] = actual_net
+            logger.info(
+                "Actual EaseBuzz fee computed",
+                extra={
+                    "internal_tx_id": internal_tx_id,
+                    "mode": payment_mode,
+                    "charged": charged_amount,
+                    "net_debit": net_amount_debit,
+                    "actual_fee": actual_fee,
+                    "actual_net": actual_net,
+                },
+            )
+
         # Atomic: only updates if the transaction is still PENDING.
         # Returns None if already processed (idempotency guard).
         updated_doc = await tx_col.find_one_and_update(
             {"internal_tx_id": internal_tx_id, "status": TxStatus.PENDING.value},
-            {"$set": {
-                "status": TxStatus.SUCCESS.value,
-                "easebuzz_txid": easebuzz_txid,
-                "completed_at": now,
-            }},
+            {"$set": fee_update},
             return_document=ReturnDocument.AFTER,
         )
 
@@ -118,12 +173,16 @@ async def easebuzz_s2s_webhook(
 
     else:
         # Atomic: only updates if still PENDING.
+        failed_update: dict = {
+            "status": TxStatus.FAILED.value,
+            "completed_at": now,
+        }
+        if payment_mode:
+            failed_update["payment_mode"] = payment_mode
+
         updated_doc = await tx_col.find_one_and_update(
             {"internal_tx_id": internal_tx_id, "status": TxStatus.PENDING.value},
-            {"$set": {
-                "status": TxStatus.FAILED.value,
-                "completed_at": now,
-            }},
+            {"$set": failed_update},
             return_document=ReturnDocument.AFTER,
         )
 

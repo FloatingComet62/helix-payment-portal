@@ -34,3 +34,4 @@ async def initiate_payment(
 
     fest = await fest_service.get_fest_db(fests_col, payload.fest_id)
     return await payment_service.initiate_payment(tx_col, fest, payload, redis)
+

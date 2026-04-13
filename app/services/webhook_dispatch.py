@@ -26,8 +26,11 @@ def build_callback_payload(transaction: TransactionDB) -> dict:
         "fest_id": transaction.fest_id,
         "origin_user_id": transaction.origin_user_id,
         "user_name": transaction.user_name,
+        "user_email": transaction.user_email,
         "user_state": transaction.user_state,
         "user_district": transaction.user_district,
+        "selected_events": transaction.selected_events,
+        "payment_mode": transaction.payment_mode,
         "booking": {
             "accommodation_days": transaction.booking.accommodation_days,
             "food_days": transaction.booking.food_days,

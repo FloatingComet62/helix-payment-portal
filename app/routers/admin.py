@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.core.database import get_db, get_fests_col, get_transactions_col
 from app.core.exceptions import AdminAuthError, FestHasTransactionsError
 from app.core.redis_client import get_redis, sync_seats_for_fest
-from app.models.fest import FestCreate, FestPublic, FestUpdate
+from app.models.fest import FestCreate, FestPublic, FestUpdate, EventSelectionConfig
 from app.services.refund_service import initiate_refund
 from app.services import fest_service
 from app.services.payment_service import _debug_log
@@ -98,30 +98,42 @@ def _to_portal_transaction(doc: dict) -> dict:
 
     return {
         "merchantOrderId": doc.get("internal_tx_id"),
+        "easebuzzTxid": doc.get("easebuzz_txid"),
         "festId": doc.get("fest_id"),
         "eventId": None,
         "teamId": None,
         "teamName": None,
         "userName": doc.get("user_name"),
-        "userEmail": None,
+        "userEmail": doc.get("user_email"),
         "userPhone": doc.get("user_phone"),
+        "userState": doc.get("user_state"),
+        "userDistrict": doc.get("user_district"),
         "collegeName": None,
         "paymentType": "accommodation",
+        "paymentMode": doc.get("payment_mode"),
+        "selectedEvents": doc.get("selected_events", []),
         "status": _to_portal_status(db_status),
         "callbackStatus": _to_callback_status(db_status),
         "originalAmount": _to_amount(doc.get("base_amount")),
+        "gstAmount": _to_amount(doc.get("gst_amount")),
+        "easebuzzFee": _to_amount(doc.get("easebuzz_transaction_fee")),
         "finalAmount": _to_amount(doc.get("final_net_credited")),
+        "couponDiscount": _to_amount(doc.get("coupon_discount_applied")),
+        "couponCode": doc.get("coupon_code"),
         "createdAt": initiated_at.isoformat() if isinstance(initiated_at, datetime) else None,
         "completedAt": completed_at.isoformat() if isinstance(completed_at, datetime) else None,
         "callbackAttempts": len(doc.get("notification_logs", []) or []),
         "callbackLastError": (doc.get("notification_logs", []) or [{}])[-1].get("error") if (doc.get("notification_logs", []) or []) else None,
+        "notificationLogs": doc.get("notification_logs", []),
         "paymentIntentions": {
             "eventRegistration": None,
             "accommodation": {
                 "totalAmount": _to_amount(booking.get("accommodation_amount")),
+                "days": booking.get("accommodation_days", 0),
             },
             "food": {
                 "totalAmount": _to_amount(booking.get("food_amount")),
+                "days": booking.get("food_days", 0),
             },
         },
     }
@@ -217,6 +229,80 @@ async def delete_fest(
     col = get_fests_col(db)
     await fest_service.delete_fest(col, fest_id)
     return None
+
+
+@router.post("/fests/{fest_id}/events", response_model=FestPublic, status_code=201)
+async def add_event(
+    fest_id: str,
+    payload: dict,
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Add a new event to a fest. Body: { "name": "...", "description": "..." (optional) }
+    Returns the updated fest with all events.
+    """
+    name = payload.get("name", "").strip()
+    if not name:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="Event name is required")
+    description = payload.get("description", None)
+    col = get_fests_col(db)
+    return await fest_service.add_event(col, fest_id, name, description)
+
+
+@router.patch("/fests/{fest_id}/events/{event_id}", response_model=FestPublic)
+async def update_event(
+    fest_id: str,
+    event_id: str,
+    payload: dict,
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Update an event's name and/or description.
+    Body: { "name": "..." (optional), "description": "..." (optional) }
+    """
+    col = get_fests_col(db)
+    return await fest_service.update_event(
+        col,
+        fest_id,
+        event_id,
+        name=payload.get("name"),
+        description=payload.get("description"),
+    )
+
+
+@router.delete("/fests/{fest_id}/events/{event_id}", response_model=FestPublic)
+async def delete_event(
+    fest_id: str,
+    event_id: str,
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Remove an event from a fest.
+    Blocked (HTTP 409) if any paid transactions reference this event_id.
+    """
+    col = get_fests_col(db)
+    tx_col = get_transactions_col(db)
+    return await fest_service.delete_event(col, tx_col, fest_id, event_id)
+
+
+@router.patch("/fests/{fest_id}/event-selection", response_model=FestPublic)
+async def update_event_selection_config(
+    fest_id: str,
+    payload: EventSelectionConfig,
+    _: None = AdminAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Update the event_selection config for a fest (enabled, required, max_selections).
+    This is also achievable via PATCH /admin/fests/{fest_id} with event_selection in the body.
+    """
+    col = get_fests_col(db)
+    update = FestUpdate(event_selection=payload)
+    return await fest_service.update_fest(col, fest_id, update)
 
 
 @router.post("/fests/check-transactions")

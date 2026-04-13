@@ -5,6 +5,7 @@ from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
+from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorCollection
 from redis.asyncio import Redis
 
@@ -91,12 +92,6 @@ def calculate_gst(taxable_amount: Decimal, gst_percent: Decimal) -> Decimal:
     ).quantize(TWOPLACES, ROUND_HALF_UP)
 
 
-def calculate_easebuzz_fee(amount: Decimal, fee_percent: Decimal) -> Decimal:
-    return (
-        amount * fee_percent / Decimal("100")
-    ).quantize(TWOPLACES, ROUND_HALF_UP)
-
-
 def _amount_str(d: Decimal) -> str:
     return f"{d:.2f}"
 
@@ -165,6 +160,44 @@ def _build_booking_with_amounts(
 
 
 # ---------------------------------------------------------------------------
+# Event selection validation
+# ---------------------------------------------------------------------------
+
+def validate_event_selections(fest: FestDB, selected_events: list[str]) -> None:
+    """
+    Validates the user's event selections against the fest's event_selection config.
+    Raises HTTP 422 on any violation.
+    """
+    cfg = fest.event_selection
+    if not cfg.enabled:
+        return  # Event selection not enabled for this fest — ignore any selections
+
+    valid_ids = {e.event_id for e in fest.events}
+
+    # Check for unknown event IDs
+    for eid in selected_events:
+        if eid not in valid_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown event_id: {eid!r}. Valid IDs: {sorted(valid_ids)}",
+            )
+
+    # Enforce required
+    if cfg.required and not selected_events:
+        raise HTTPException(
+            status_code=422,
+            detail="Event selection is required for this fest. Please select at least one event.",
+        )
+
+    # Enforce max_selections
+    if len(selected_events) > cfg.max_selections:
+        raise HTTPException(
+            status_code=422,
+            detail=f"You may select at most {cfg.max_selections} event(s). Got {len(selected_events)}.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main service function
 # ---------------------------------------------------------------------------
 
@@ -173,20 +206,28 @@ async def initiate_payment(
     fest: FestDB,
     request: TransactionCreate,
     redis: Redis,
-    user_email: str = "noreply@portal.local",
 ) -> PaymentInitiateResponse:
     """
-    1. Check seat availability atomically in Redis (if fest has a seat cap).
-    2. Calculate all financial figures using Decimal arithmetic.
-    3. Create a PENDING transaction in MongoDB.
-    4. Generate the EaseBuzz hash.
-    5. Return the payload the frontend needs to redirect to EaseBuzz.
+    1. Validate event selections against fest config.
+    2. Check seat availability atomically in Redis (if fest has a seat cap).
+    3. Calculate all financial figures using Decimal arithmetic.
+    4. Create a PENDING transaction in MongoDB.
+    5. Generate the EaseBuzz hash using the real user email.
+    6. Return the payload the frontend needs to redirect to EaseBuzz.
+
+    NOTE: easebuzz_transaction_fee and final_net_credited are stored as "0.00"
+    at initiation because the actual fee depends on the payment mode (UPI, CC, DC, NB)
+    which is only known after EaseBuzz confirms the payment. The webhook handler
+    updates these fields with real values from EaseBuzz's net_amount_debit field.
 
     Seat reservation is created BEFORE the MongoDB insert so that if the
     insert fails, the reservation TTL will auto-expire and release the seat.
     """
     settings = get_settings()
     pricing = fest.pricing
+
+    # ── Validate event selections ──────────────────────────────────────────
+    validate_event_selections(fest, request.selected_events)
 
     booking_with_amounts = _build_booking_with_amounts(pricing, request.booking)
     base_amount = calculate_base_amount(pricing, request.booking)
@@ -205,8 +246,8 @@ async def initiate_payment(
     gst_percent = Decimal(str(pricing.gst_percent))
     gst_amount = calculate_gst(taxable_amount, gst_percent)
     charge_amount = (taxable_amount + gst_amount).quantize(TWOPLACES, ROUND_HALF_UP)
-    easebuzz_fee = calculate_easebuzz_fee(charge_amount, settings.EASEBUZZ_FEE_PERCENT)
-    final_net_credited = (charge_amount - easebuzz_fee).quantize(TWOPLACES, ROUND_HALF_UP)
+    # Fee and net credited are unknown at initiation — depends on payment mode (UPI/CC/DC/NB).
+    # Stored as "0.00" and updated by the webhook handler with actual values from EaseBuzz.
 
     internal_tx_id = str(uuid.uuid4())
     now = datetime.now(tz=timezone.utc)
@@ -223,16 +264,18 @@ async def initiate_payment(
         fest_id=request.fest_id,
         origin_user_id=request.origin_user_id,
         user_name=request.user_name,
+        user_email=str(request.user_email),
         user_phone=request.user_phone,
         user_state=request.user_state,
         user_district=request.user_district,
         booking=booking_with_amounts,
         base_amount=_amount_str(base_amount),
         gst_amount=_amount_str(gst_amount),
-        easebuzz_transaction_fee=_amount_str(easebuzz_fee),
+        easebuzz_transaction_fee="0.00",   # Updated after payment with actual value
         coupon_discount_applied=_amount_str(coupon_discount),
-        final_net_credited=_amount_str(final_net_credited),
+        final_net_credited="0.00",          # Updated after payment with actual value
         coupon_code=request.coupon_code,
+        selected_events=request.selected_events,
         status=TxStatus.PENDING,
         initiated_at=now,
     )
@@ -241,6 +284,7 @@ async def initiate_payment(
     # ── Build EaseBuzz payload ─────────────────────────────────────────────
     amount_str = _amount_str(charge_amount)
     productinfo = f"{fest.fest_id.replace('_', ' ')} booking"
+    user_email_str = str(request.user_email)
 
     eb_hash = generate_easebuzz_hash(
         key=settings.EASEBUZZ_KEY,
@@ -248,7 +292,7 @@ async def initiate_payment(
         amount=amount_str,
         productinfo=productinfo,
         firstname=request.user_name,
-        email=user_email,
+        email=user_email_str,
         salt=settings.EASEBUZZ_SALT,
         udf1=request.origin_user_id,
         udf2=request.fest_id,
@@ -263,7 +307,7 @@ async def initiate_payment(
         "payment_url": settings.easebuzz_payment_url,
         "hash_input": (
             f"{settings.EASEBUZZ_KEY}|{internal_tx_id}|{amount_str}|{productinfo}"
-            f"|{request.user_name}|noreply@portal.local"
+            f"|{request.user_name}|{user_email_str}"
             f"|{request.origin_user_id}|{request.fest_id}|||||||||{settings.EASEBUZZ_SALT}"
         ),
         "hash": eb_hash,
@@ -283,7 +327,7 @@ async def initiate_payment(
         amount=amount_str,
         productinfo=productinfo,
         firstname=request.user_name,
-        email=user_email,
+        email=user_email_str,
         phone=gateway_phone,
         udf1=request.origin_user_id,
         udf2=request.fest_id,

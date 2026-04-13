@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import secrets
+import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
+from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorCollection
 from pymongo.errors import DuplicateKeyError
 
 from app.core.exceptions import FestAlreadyExistsError, FestNotFoundError
-from app.models.fest import FestCreate, FestDB, FestPublic, FestUpdate
+from app.models.fest import FestCreate, FestDB, FestEvent, FestPublic, FestUpdate
 
 
 def _doc_to_fest_db(doc: dict) -> FestDB:
@@ -101,3 +104,105 @@ async def get_fest_secret(col: AsyncIOMotorCollection, fest_id: str) -> str:
     if not doc:
         raise FestNotFoundError(fest_id)
     return doc["secret_key"]
+
+
+# ---------------------------------------------------------------------------
+# Event CRUD
+# ---------------------------------------------------------------------------
+
+async def add_event(
+    col: AsyncIOMotorCollection,
+    fest_id: str,
+    name: str,
+    description: Optional[str] = None,
+) -> FestPublic:
+    """
+    Add a new event to a fest's events list.
+    Generates a UUID for the event_id server-side.
+    """
+    event = FestEvent(
+        event_id=str(uuid.uuid4()),
+        name=name,
+        description=description,
+    )
+    result = await col.find_one_and_update(
+        {"fest_id": fest_id},
+        {"$push": {"events": event.model_dump(mode="json")}},
+        return_document=True,
+    )
+    if not result:
+        raise FestNotFoundError(fest_id)
+    return _doc_to_fest_public(result)
+
+
+async def update_event(
+    col: AsyncIOMotorCollection,
+    fest_id: str,
+    event_id: str,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> FestPublic:
+    """
+    Update an existing event's name and/or description.
+    Uses positional $ operator to target the matching array element.
+    """
+    set_fields: dict = {}
+    if name is not None:
+        set_fields["events.$.name"] = name
+    if description is not None:
+        set_fields["events.$.description"] = description
+
+    if not set_fields:
+        return await get_fest_public(col, fest_id)
+
+    result = await col.find_one_and_update(
+        {"fest_id": fest_id, "events.event_id": event_id},
+        {"$set": set_fields},
+        return_document=True,
+    )
+    if not result:
+        # Could be fest not found or event_id not found
+        fest_doc = await col.find_one({"fest_id": fest_id})
+        if not fest_doc:
+            raise FestNotFoundError(fest_id)
+        raise HTTPException(status_code=404, detail=f"Event {event_id!r} not found in fest {fest_id!r}")
+    return _doc_to_fest_public(result)
+
+
+async def delete_event(
+    col: AsyncIOMotorCollection,
+    transactions_col: AsyncIOMotorCollection,
+    fest_id: str,
+    event_id: str,
+) -> FestPublic:
+    """
+    Remove an event from a fest's events list.
+    Blocked if any paid transaction references this event_id — cannot delete
+    events that are part of the historical record.
+    """
+    # Guard: check for paid transactions that selected this event
+    paid_count = await transactions_col.count_documents(
+        {
+            "fest_id": fest_id,
+            "selected_events": event_id,
+            "status": {"$in": ["SUCCESS", "NOTIFIED_SUCCESS", "NOTIFIED_FAILURE"]},
+        }
+    )
+    if paid_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot delete event {event_id!r}: {paid_count} paid transaction(s) "
+                f"reference this event. Delete the event from the fest config is blocked "
+                f"to preserve the audit trail."
+            ),
+        )
+
+    result = await col.find_one_and_update(
+        {"fest_id": fest_id},
+        {"$pull": {"events": {"event_id": event_id}}},
+        return_document=True,
+    )
+    if not result:
+        raise FestNotFoundError(fest_id)
+    return _doc_to_fest_public(result)
