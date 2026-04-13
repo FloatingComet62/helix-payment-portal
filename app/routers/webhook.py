@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -15,34 +14,12 @@ from app.core.redis_client import confirm_seat, get_redis, release_seat
 from app.core.security import verify_easebuzz_response_hash
 from app.models.transaction import TransactionDB, TxStatus
 from app.services import fest_service
+from app.services.easebuzz_fetch_service import fetch_and_update_actual_fee
 from app.services.webhook_dispatch import dispatch_to_fest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhook", tags=["Webhook"])
-
-TWOPLACES = Decimal("0.01")
-
-
-def _compute_actual_fee_fields(
-    charged_amount_str: str,
-    net_amount_debit_str: str,
-) -> tuple[str, str]:
-    """
-    Compute actual easebuzz_transaction_fee and final_net_credited from webhook data.
-
-    EaseBuzz sends net_amount_debit = what the merchant actually receives after their cut.
-    Fee = charged_amount - net_amount_debit.
-
-    Returns: (easebuzz_transaction_fee_str, final_net_credited_str)
-    """
-    try:
-        charged = Decimal(str(charged_amount_str)).quantize(TWOPLACES, ROUND_HALF_UP)
-        net = Decimal(str(net_amount_debit_str)).quantize(TWOPLACES, ROUND_HALF_UP)
-        fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
-        return f"{fee:.2f}", f"{net:.2f}"
-    except Exception:
-        return "0.00", "0.00"
 
 
 @router.post("/easebuzz")
@@ -107,16 +84,16 @@ async def easebuzz_s2s_webhook(
     easebuzz_txid = data.get("easepayid", "")
     payment_status = data.get("status", "").lower()
 
-    # Extract actual fee data from EaseBuzz webhook
+    # mode is included in the S2S webhook; net_amount_debit is NOT reliable here —
+    # we call the EaseBuzz fetch API as a background task to get the actual settlement.
     payment_mode = data.get("mode", "")  # e.g. "UPI", "CC", "DC", "NB"
-    net_amount_debit = data.get("net_amount_debit", "")  # actual amount credited to merchant
-    charged_amount = data.get("amount", "")  # amount charged to user
+    charged_amount = data.get("amount", "")  # amount charged to user (reliable from webhook)
 
     tx_col = get_transactions_col(db)
     now = datetime.now(tz=timezone.utc)
 
     if payment_status == "success":
-        # Build the fee update — use actual values from EaseBuzz if available
+        # Set mode immediately from webhook; fee/net will be filled in by the fetch background task
         fee_update: dict = {
             "status": TxStatus.SUCCESS.value,
             "easebuzz_txid": easebuzz_txid,
@@ -124,21 +101,6 @@ async def easebuzz_s2s_webhook(
         }
         if payment_mode:
             fee_update["payment_mode"] = payment_mode
-        if net_amount_debit and charged_amount:
-            actual_fee, actual_net = _compute_actual_fee_fields(charged_amount, net_amount_debit)
-            fee_update["easebuzz_transaction_fee"] = actual_fee
-            fee_update["final_net_credited"] = actual_net
-            logger.info(
-                "Actual EaseBuzz fee computed",
-                extra={
-                    "internal_tx_id": internal_tx_id,
-                    "mode": payment_mode,
-                    "charged": charged_amount,
-                    "net_debit": net_amount_debit,
-                    "actual_fee": actual_fee,
-                    "actual_net": actual_net,
-                },
-            )
 
         # Atomic: only updates if the transaction is still PENDING.
         # Returns None if already processed (idempotency guard).
@@ -166,8 +128,22 @@ async def easebuzz_s2s_webhook(
         fest = await fest_service.get_fest_db(fests_col, transaction.fest_id)
 
         background_tasks.add_task(dispatch_to_fest, transaction, fest, db)
+
+        # Fetch actual settlement amount from EaseBuzz API in the background
+        # (S2S webhook does not include net_amount_debit reliably)
+        if charged_amount:
+            background_tasks.add_task(
+                fetch_and_update_actual_fee,
+                tx_col,
+                internal_tx_id,
+                charged_amount,
+                settings.EASEBUZZ_KEY,
+                settings.EASEBUZZ_SALT,
+                settings.EASEBUZZ_ENV,
+            )
+
         logger.info(
-            "Transaction marked SUCCESS, dispatch queued",
+            "Transaction marked SUCCESS, dispatch and fee-fetch queued",
             extra={"internal_tx_id": internal_tx_id},
         )
 

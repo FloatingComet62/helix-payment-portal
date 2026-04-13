@@ -33,6 +33,8 @@ async def list_fests_public(
             "long_description": 1,
             "pricing": 1,
             "available_options": 1,
+            "events": 1,
+            "event_selection": 1,
         },
     )
     return [FestListing(**doc) async for doc in cursor]
@@ -61,6 +63,8 @@ async def get_fest_public(
             "long_description": 1,
             "pricing": 1,
             "available_options": 1,
+            "events": 1,
+            "event_selection": 1,
         },
     )
     if not doc:
