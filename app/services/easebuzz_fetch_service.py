@@ -15,6 +15,7 @@ Returns a JSON list; we take the first element.
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import re
 from json import JSONDecodeError
@@ -94,14 +95,20 @@ def _parse_text_payload(text: str) -> dict[str, Any]:
     body = text.strip()
     if not body:
         return parsed
+    body = html.unescape(body)
+    # Flatten markup-heavy responses into plain text.
+    body = re.sub(r"<[^>]+>", " ", body)
+    body = re.sub(r"\s+", " ", body).strip()
 
     # Explicit patterns first
+    sep = r"(?:\s*[:=]\s*|\s+)"
     patterns = {
-        "settlement_amount": r"settlement\s*amount\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
-        "service_charge": r"service\s*charge\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
-        "service_charge_gst": r"(?:service\s*charge\s*gst|gst\s*on\s*service\s*charge|service\s*tax)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
-        "net_amount_debit": r"(?:net\s*amount\s*debit|net_amount_debit|net\s*amount)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)",
-        "mode": r"(?:payment\s*mode|mode)\s*[:=]\s*([A-Za-z0-9_]+)",
+        "settlement_amount": rf"settlement\s*amount{sep}([0-9]+(?:\.[0-9]+)?)",
+        "service_charge": rf"service\s*charge{sep}([0-9]+(?:\.[0-9]+)?)",
+        "service_charge_gst": rf"(?:service\s*charge\s*gst|gst\s*on\s*service\s*charge|service\s*tax){sep}([0-9]+(?:\.[0-9]+)?)",
+        "net_amount_debit": rf"(?:net\s*amount\s*debit|net_amount_debit|net\s*amount){sep}([0-9]+(?:\.[0-9]+)?)",
+        "mode": rf"(?:payment\s*mode|mode){sep}([A-Za-z0-9_]+)",
+        "gst": rf"\bgst{sep}([0-9]+(?:\.[0-9]+)?)",
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, body, flags=re.IGNORECASE)
