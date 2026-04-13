@@ -130,10 +130,26 @@ def derive_fee_and_net_from_payload(
     payload: dict[str, Any],
     charged_amount_str: str,
 ) -> tuple[str, str, str] | None:
+    """
+    Derive (fee, net_credited, source) from any EaseBuzz payload.
+
+    Strategy priority:
+    1. settlement_amount — authoritative (CSV export or future fetch API)
+    2. service_charge + optional GST — authoritative (CSV export)
+    3. deduction_percentage — EaseBuzz S2S webhook TDR rate; fee = charged * rate/100,
+       then add 18% GST on that service charge (standard Indian GST on payment processing).
+       EaseBuzz sends the actual rate for whatever mode was used (UPI/CC/DC/NB/etc.),
+       so this is fully general across all payment modes.
+    4. net_amount_debit — only if strictly less than charged.
+       NOTE: EaseBuzz S2S webhook sends net_amount_debit == charged (customer-debit amount,
+       not merchant-net). Strategy 3 handles the webhook case. This fallback is for any
+       API response that genuinely sends the merchant-net amount.
+    """
     charged = _parse_decimal(charged_amount_str)
     if charged is None:
         return None
 
+    # --- Strategy 1: settlement_amount (CSV export or future fetch API) ---
     settlement_amount = _extract_decimal(
         payload,
         "settlement_amount",
@@ -141,6 +157,12 @@ def derive_fee_and_net_from_payload(
         "amount_settled",
         "settlement_amt",
     )
+    if settlement_amount is not None and Decimal("0.00") <= settlement_amount <= charged:
+        net = settlement_amount
+        fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
+        return (f"{fee:.2f}", f"{net:.2f}", "settlement_amount")
+
+    # --- Strategy 2: service_charge + optional GST (CSV export) ---
     service_charge = _extract_decimal(
         payload,
         "service_charge",
@@ -157,6 +179,32 @@ def derive_fee_and_net_from_payload(
         "tax_on_service_charge",
         "gst",
     )
+    if service_charge is not None:
+        fee_candidate = service_charge + (service_charge_gst or Decimal("0.00"))
+        fee_candidate = fee_candidate.quantize(TWOPLACES, ROUND_HALF_UP)
+        if Decimal("0.00") <= fee_candidate <= charged:
+            fee = fee_candidate
+            net = (charged - fee).quantize(TWOPLACES, ROUND_HALF_UP)
+            return (f"{fee:.2f}", f"{net:.2f}", "service_charge(+gst)")
+
+    # --- Strategy 3: deduction_percentage from EaseBuzz S2S webhook ---
+    # EaseBuzz sends deduction_percentage = the actual TDR rate applied for this
+    # transaction's payment mode (e.g. 0.5 for UPI, 2.0 for CC, 1.0 for NB, etc.).
+    # EaseBuzz also levies 18% GST on top of the service charge (Indian standard).
+    # net_amount_debit in the S2S webhook == charged amount (customer-debit, not
+    # merchant-net) — do NOT use it directly; use the TDR rate instead.
+    deduction_pct = _extract_decimal(payload, "deduction_percentage")
+    if deduction_pct is not None and Decimal("0") < deduction_pct <= Decimal("10"):
+        sc = (charged * deduction_pct / 100).quantize(TWOPLACES, ROUND_HALF_UP)
+        gst_on_sc = (sc * Decimal("0.18")).quantize(TWOPLACES, ROUND_HALF_UP)
+        fee = (sc + gst_on_sc).quantize(TWOPLACES, ROUND_HALF_UP)
+        net = (charged - fee).quantize(TWOPLACES, ROUND_HALF_UP)
+        if Decimal("0.00") <= fee <= charged:
+            return (f"{fee:.2f}", f"{net:.2f}", "deduction_percentage")
+
+    # --- Strategy 4: net_amount_debit — only if STRICTLY less than charged ---
+    # When net_amount_debit == charged it is the customer-debit amount (EaseBuzz webhook
+    # quirk), not merchant-net. Only trust it if it is actually less than charged.
     net_amount = _extract_decimal(
         payload,
         "net_amount_debit",
@@ -164,31 +212,12 @@ def derive_fee_and_net_from_payload(
         "merchant_net_amount",
         "amount_to_merchant",
     )
-
-    net: Decimal | None = None
-    fee: Decimal | None = None
-    source = ""
-
-    if settlement_amount is not None and Decimal("0.00") <= settlement_amount <= charged:
-        net = settlement_amount
-        fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
-        source = "settlement_amount"
-    elif service_charge is not None:
-        fee_candidate = service_charge + (service_charge_gst or Decimal("0.00"))
-        fee_candidate = fee_candidate.quantize(TWOPLACES, ROUND_HALF_UP)
-        if Decimal("0.00") <= fee_candidate <= charged:
-            fee = fee_candidate
-            net = (charged - fee).quantize(TWOPLACES, ROUND_HALF_UP)
-            source = "service_charge(+gst)"
-
-    if net is None and net_amount is not None and Decimal("0.00") <= net_amount <= charged:
+    if net_amount is not None and Decimal("0.00") <= net_amount < charged:
         net = net_amount
         fee = (charged - net).quantize(TWOPLACES, ROUND_HALF_UP)
-        source = "net_amount_debit"
+        return (f"{fee:.2f}", f"{net:.2f}", "net_amount_debit")
 
-    if net is None or fee is None:
-        return None
-    return (f"{fee:.2f}", f"{net:.2f}", source)
+    return None
 
 
 async def fetch_and_update_actual_fee(
