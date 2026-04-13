@@ -40,16 +40,20 @@ class Settings(BaseSettings):
     EASEBUZZ_FEE_PERCENT: Decimal = Decimal("2.00")
 
     @property
+    def easebuzz_base_url(self) -> str:
+        return "https://pay.easebuzz.in" if self.EASEBUZZ_ENV == "prod" else "https://testpay.easebuzz.in"
+
+    @property
     def easebuzz_payment_url(self) -> str:
-        if self.EASEBUZZ_ENV == "prod":
-            return "https://pay.easebuzz.in/payment/initiateLink"
-        return "https://testpay.easebuzz.in/payment/initiateLink"
+        return f"{self.easebuzz_base_url}/payment/initiateLink"
 
     @property
     def easebuzz_refund_url(self) -> str:
-        if self.EASEBUZZ_ENV == "prod":
-            return "https://pay.easebuzz.in/transaction/refund/v2"
-        return "https://testpay.easebuzz.in/transaction/refund/v2"
+        return f"{self.easebuzz_base_url}/transaction/refund/v2"
+
+    @property
+    def easebuzz_transaction_url(self) -> str:
+        return f"{self.easebuzz_base_url}/transaction/v2"
 
     @property
     def cors_allow_origins(self) -> list[str]:

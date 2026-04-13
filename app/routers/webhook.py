@@ -14,10 +14,7 @@ from app.core.redis_client import confirm_seat, get_redis, release_seat
 from app.core.security import verify_easebuzz_response_hash
 from app.models.transaction import TransactionDB, TxStatus
 from app.services import fest_service
-from app.services.easebuzz_fetch_service import (
-    derive_fee_and_net_from_payload,
-    fetch_and_update_actual_fee,
-)
+from app.services.easebuzz_fetch_service import derive_fee_and_net_from_payload
 from app.services.webhook_dispatch import dispatch_to_fest
 
 logger = logging.getLogger(__name__)
@@ -148,21 +145,8 @@ async def easebuzz_s2s_webhook(
         fest = await fest_service.get_fest_db(fests_col, transaction.fest_id)
 
         background_tasks.add_task(dispatch_to_fest, transaction, fest, db)
-
-        # Reconcile settlement details from EaseBuzz fetch API in the background.
-        if charged_amount:
-            background_tasks.add_task(
-                fetch_and_update_actual_fee,
-                tx_col,
-                internal_tx_id,
-                charged_amount,
-                settings.EASEBUZZ_KEY,
-                settings.EASEBUZZ_SALT,
-                settings.EASEBUZZ_ENV,
-            )
-
         logger.info(
-            "Transaction marked SUCCESS, dispatch and fee reconciliation queued",
+            "Transaction marked SUCCESS, dispatch queued",
             extra={"internal_tx_id": internal_tx_id},
         )
 

@@ -197,7 +197,7 @@ async def fetch_and_update_actual_fee(
     charged_amount_str: str,
     key: str,
     salt: str,
-    easebuzz_env: str,
+    transaction_url: str,
 ) -> bool:
     """
     Background task: call EaseBuzz transaction fetch API, then update DB with
@@ -211,15 +211,9 @@ async def fetch_and_update_actual_fee(
         hash_input = f"{key}|{internal_tx_id}|{salt}"
         tx_hash = hashlib.sha512(hash_input.encode()).hexdigest()
 
-        base_url = (
-            "https://pay.easebuzz.in"
-            if easebuzz_env == "prod"
-            else "https://testpay.easebuzz.in"
-        )
-
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
-                f"{base_url}/transaction/v2",
+                transaction_url,
                 data={"key": key, "txnid": internal_tx_id, "hash": tx_hash},
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
