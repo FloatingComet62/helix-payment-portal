@@ -96,3 +96,35 @@ async def checkin_user(
         raise HTTPException(status_code=404, detail=f"No transaction found for uid '{body.uid}'")
 
     return {"uid": body.uid, "checked_in": True}
+
+
+@router.post("/checkout")
+async def checkout_user(
+    body: CheckInRequest,
+    _: None = LHSAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Reverts a check-in by setting checked_in = false.
+    """
+    tx_col = get_transactions_col(db)
+    result = await tx_col.find_one_and_update(
+        {"fest_id": FEST_ID, "origin_user_id": body.uid},
+        {"$set": {"checked_in": False}},
+        return_document=True,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No transaction found for uid '{body.uid}'")
+
+    return {"uid": body.uid, "checked_in": False}
+
+
+@router.get("/checkpassword")
+async def check_password(x_lhs_key: str = Header(..., alias="X-LHS-Key")):
+    """
+    Returns whether the provided X-LHS-Key is correct.
+    Always responds 200 — never raises 401 — so the frontend can
+    use the boolean to gate the UI rather than catching errors.
+    """
+    valid = x_lhs_key == get_settings().LHS_API_KEY
+    return {"valid": valid}
