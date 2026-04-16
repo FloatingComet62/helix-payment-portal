@@ -51,25 +51,26 @@ async def get_lhs_transactions(
 
     results = []
     for doc in docs:
-        selected_event_ids: list[str] = doc.get("selected_events") or []
-        event_names = [event_map[eid] for eid in selected_event_ids if eid in event_map]
+        if doc.get("status") == "NOTIFIED_SUCCESS":
+            selected_event_ids: list[str] = doc.get("selected_events") or []
+            event_names = [event_map[eid] for eid in selected_event_ids if eid in event_map]
 
-        amount_paid = (
-            _f(doc.get("base_amount"))
-            - _f(doc.get("coupon_discount_applied"))
-            + _f(doc.get("gst_amount"))
-        )
+            amount_paid = (
+                _f(doc.get("base_amount"))
+                - _f(doc.get("coupon_discount_applied"))
+                + _f(doc.get("gst_amount"))
+            )
 
-        results.append({
-            "uid": doc.get("origin_user_id"),
-            "user_name": doc.get("user_name"),
-            "user_phone": doc.get("user_phone"),
-            "user_email": doc.get("user_email"),
-            "city": doc.get("user_district"),
-            "events": event_names,
-            "amount_paid": amount_paid,
-            "checked_in": doc.get("checked_in", False),
-        })
+            results.append({
+                "uid": doc.get("origin_user_id"),
+                "user_name": doc.get("user_name"),
+                "user_phone": doc.get("user_phone"),
+                "user_email": doc.get("user_email"),
+                "city": doc.get("user_district"),
+                "events": event_names,
+                "amount_paid": amount_paid,
+                "checked_in": doc.get("checked_in", False),
+            })
 
     return {"fest_id": FEST_ID, "count": len(results), "transactions": results}
 
