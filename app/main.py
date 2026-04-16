@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.core.database import close_db, get_fests_col, get_transactions_col, init_db, ping_db
 from app.core.redis_client import init_all_seats, init_redis
-from app.routers import admin, export, payment, portal, webhook
+from app.routers import admin, export, lhs, payment, portal, webhook
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +77,7 @@ app.include_router(payment.router)
 app.include_router(webhook.router)
 app.include_router(admin.router)
 app.include_router(export.router)
+app.include_router(lhs.router)
 
 
 @app.get("/health", tags=["Health"])

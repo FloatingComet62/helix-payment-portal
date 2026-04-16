@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Admin
     ADMIN_API_KEY: str
 
+    # LHS report key
+    LHS_API_KEY: str = "DEFAULT"
+
     # Fee config
     EASEBUZZ_FEE_PERCENT: Decimal = Decimal("2.00")
 
