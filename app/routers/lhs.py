@@ -64,7 +64,7 @@ async def get_lhs_transactions(
             "user_email": doc.get("user_email"),
             "city" : doc.get("user_district"),
             "events": event_names,
-            "amount_paid": round(amount_paid, 2),
+            "amount_paid": doc.get("base_amount"),
         })
 
     return {"fest_id": FEST_ID, "count": len(results), "transactions": results}
