@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel
 
 from app.core.config import get_settings
 from app.core.database import get_db, get_fests_col, get_transactions_col
@@ -17,6 +18,13 @@ def _verify_lhs_key(x_lhs_key: str = Header(..., alias="X-LHS-Key")) -> None:
 
 
 LHSAuth = Depends(_verify_lhs_key)
+
+
+def _f(val) -> float:
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @router.get("")
@@ -46,12 +54,6 @@ async def get_lhs_transactions(
         selected_event_ids: list[str] = doc.get("selected_events") or []
         event_names = [event_map[eid] for eid in selected_event_ids if eid in event_map]
 
-        def _f(val) -> float:
-            try:
-                return float(val)
-            except (TypeError, ValueError):
-                return 0.0
-
         amount_paid = (
             _f(doc.get("base_amount"))
             - _f(doc.get("coupon_discount_applied"))
@@ -59,12 +61,40 @@ async def get_lhs_transactions(
         )
 
         results.append({
+            "uid": doc.get("origin_user_id"),
             "user_name": doc.get("user_name"),
             "user_phone": doc.get("user_phone"),
             "user_email": doc.get("user_email"),
-            "city" : doc.get("user_district"),
+            "city": doc.get("user_district"),
             "events": event_names,
-            "amount_paid": doc.get("base_amount"),
+            "amount_paid": amount_paid,
+            "checked_in": doc.get("checked_in", False),
         })
 
     return {"fest_id": FEST_ID, "count": len(results), "transactions": results}
+
+
+class CheckInRequest(BaseModel):
+    uid: str
+
+
+@router.post("/checkin")
+async def checkin_user(
+    body: CheckInRequest,
+    _: None = LHSAuth,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Marks a user as checked in by setting checked_in = true on their
+    HELIX_2026 transaction document, looked up by origin_user_id.
+    """
+    tx_col = get_transactions_col(db)
+    result = await tx_col.find_one_and_update(
+        {"fest_id": FEST_ID, "origin_user_id": body.uid},
+        {"$set": {"checked_in": True}},
+        return_document=True,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No transaction found for uid '{body.uid}'")
+
+    return {"uid": body.uid, "checked_in": True}

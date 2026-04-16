@@ -98,6 +98,12 @@ spec:
                   name: central-payment-secrets
                   key: admin-api-key
 
+            - name: LHS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: central-payment-secrets
+                  key: lhs-api-key
+
           readinessProbe:
             httpGet:
               path: /health
