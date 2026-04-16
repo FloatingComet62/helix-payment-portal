@@ -108,12 +108,11 @@ async def checkout_user(
     Reverts a check-in by setting checked_in = false.
     """
     tx_col = get_transactions_col(db)
-    result = await tx_col.find_one_and_update(
+    result = await tx_col.update_one(
         {"fest_id": FEST_ID, "origin_user_id": body.uid},
         {"$set": {"checked_in": False}},
-        return_document=True,
     )
-    if result is None:
+    if result.matched_count == 0:
         raise HTTPException(status_code=404, detail=f"No transaction found for uid '{body.uid}'")
 
     return {"uid": body.uid, "checked_in": False}
